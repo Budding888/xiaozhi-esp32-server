@@ -121,7 +121,7 @@ class ASRPerformanceTester:
                         lambda: asyncio.run(self._test_single_audio(stt_name, stt, self.test_wav_list[0]))
                     )
                     first_result = await asyncio.wait_for(
-                        asyncio.wrap_future(future), timeout=10.0
+                        asyncio.wrap_future(future), timeout=20.0
                     )
                     
                     if first_result is None:
@@ -133,7 +133,7 @@ class ASRPerformanceTester:
                             "error_type": "网络错误"
                         }
             except asyncio.TimeoutError:
-                print(f" {stt_name} 连接超时（10秒），跳过")
+                print(f" {stt_name} 连接超时（20秒），跳过")
                 return {
                     "name": stt_name,
                     "type": "stt",
@@ -300,7 +300,7 @@ class ASRPerformanceTester:
 
         print(tabulate(table_data, headers=headers, tablefmt="grid"))
         print("\n测试说明:")
-        print("- 超时控制：单个音频最大等待时间为10秒")
+        print("- 超时控制：单个音频最大等待时间为20秒")
         print("- 错误处理：自动跳过502错误、超时和网络异常的模型")
         print("- 成功率：成功识别的音频数量/总测试音频数量")
         print("- 排序规则：按平均耗时从快到慢排序，错误模型排最后")

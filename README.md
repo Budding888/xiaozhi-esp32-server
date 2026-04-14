@@ -1,5 +1,10 @@
 [![Banners](docs/images/banner1.png)](https://github.com/xinnan-tech/xiaozhi-esp32-server)
 
+
+
+
+<a href="https://xiaozhi.me/">xiaozhi.me 官方服务器</a>
+
 <h1 align="center">小智后端服务xiaozhi-esp32-server</h1>
 
 <p align="center">

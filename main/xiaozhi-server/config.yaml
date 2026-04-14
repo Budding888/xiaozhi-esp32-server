@@ -12,19 +12,22 @@ server:
   port: 8000
   # http服务的端口，用于简单OTA接口(单服务部署)，以及视觉分析接口
   http_port: 8003
+
   # 这个websocket配置是指ota接口向设备发送的websocket地址
   # 如果按默认的写法，ota接口会自动生成websocket地址，并输出在启动日志里，这个地址你可以直接用浏览器访问ota接口确认一下
   # 当你使用docker部署或使用公网部署(使用ssl、域名)时，不一定准确
   # 所以如果你使用docker部署时，将websocket设置成局域网地址
   # 如果你使用公网部署时，将vwebsocket设置成公网地址
-  websocket: ws://你的ip或者域名:端口号/xiaozhi/v1/
+  websocket: ws://127.0.0.1:8000/xiaozhi/v1/
+
   # 视觉分析接口地址
   # 向设备发送的视觉分析的接口地址
   # 如果按下面默认的写法，系统会自动生成视觉识别地址，并输出在启动日志里，这个地址你可以直接用浏览器访问确认一下
   # 当你使用docker部署或使用公网部署(使用ssl、域名)时，不一定准确
   # 所以如果你使用docker部署时，将vision_explain设置成局域网地址
   # 如果你使用公网部署时，将vision_explain设置成公网地址
-  vision_explain: http://你的ip或者域名:端口号/mcp/vision/explain
+  vision_explain: http://127.0.0.1:8000/mcp/vision/explain
+
   # OTA返回信息时区偏移量
   timezone_offset: +8
   # 认证配置
@@ -102,6 +105,9 @@ module_test:
 
 # 唤醒词，用于识别唤醒词还是讲话内容
 wakeup_words:
+  - "你好小乐"
+  - "小乐小乐"
+  - "小乐同学"
   - "你好小智"
   - "嘿你好呀"
   - "你好小志"
@@ -133,9 +139,11 @@ plugins:
   # 申请地址：https://console.qweather.com/#/apps/create-key/over
   # 申请后通过这个链接可以找到自己的apihost：https://console.qweather.com/setting?lang=zh
   get_weather:
-    api_host: "mj7p3y7naa.re.qweatherapi.com"
-    api_key: "a861d0d5e7bf4ee1a83d9a9e4f96d4da"
-    default_location: "广州"
+#    api_host: "mj7p3y7naa.re.qweatherapi.com"
+#    api_key: "a861d0d5e7bf4ee1a83d9a9e4f96d4da"
+    api_host: "mu7qqth55c.re.qweatherapi.com"
+    api_key: "62ec43249cc445e0ad7d8af9c08e2a84"
+    default_location: "西安"
   # 获取新闻插件的配置，这里根据需要的新闻类型传入对应的url链接，默认支持社会、科技、财经新闻
   # 更多类型的新闻列表查看 https://www.chinanews.com.cn/rss/
   get_news_from_chinanews:
@@ -291,6 +299,8 @@ ASR:
     type: fun_local
     model_dir: models/SenseVoiceSmall
     output_dir: tmp/
+    api_key: XXXXX
+    access_token: XXXXX
   FunASRServer:
     # 独立部署FunASR，使用FunASR的API服务，只需要五句话
     # 第一句：mkdir -p ./funasr-runtime-resources/models
@@ -304,7 +314,8 @@ ASR:
     host: 127.0.0.1
     port: 10096
     is_ssl: true
-    api_key: none
+    api_key: XXXXX
+    access_token: XXXXX
     output_dir: tmp/
   SherpaASR:
     # Sherpa-ONNX 本地语音识别（需手动下载模型）
@@ -316,6 +327,7 @@ ASR:
   SherpaParaformerASR:
     # 中文语音识别模型，可以运行在低性能设备（需手动下载模型，例如RK3566-2g）
     # 详细配置说明请参考：docs/sherpa-paraformer-guide.md
+    # 下载地址：https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models
     type: sherpa_onnx_local
     model_dir: models/sherpa-onnx-paraformer-zh-small-2024-03-09
     output_dir: tmp/

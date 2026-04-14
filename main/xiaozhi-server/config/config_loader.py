@@ -53,6 +53,22 @@ def load_config():
     return config
 
 
+def load_tester_config():
+    # ===================== 核心修改 =====================
+    # 固定加载：performance_tester/data/.config.yaml
+    # 获取项目根目录（xiaozhi-server）
+    project_dir = get_project_dir()
+    # 拼接路径 → performance_tester/data/.config.yaml
+    custom_config_path = os.path.join(project_dir, "performance_tester", "data", ".config.yaml")
+    # ====================================================
+    # 只加载自定义配置
+    config = read_config(custom_config_path)
+    # 初始化目录
+    ensure_directories(config)
+    return config
+
+
+
 async def get_config_from_api_async(config):
     """从Java API获取配置（异步版本）"""
     # 初始化API客户端

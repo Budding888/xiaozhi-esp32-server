@@ -1,14 +1,17 @@
-import asyncio
-import logging
+import sys
 import os
-import time
-from typing import Dict
-import yaml
-from tabulate import tabulate
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+import asyncio;
+import logging;
+import os;
+import time;
+from typing import Dict;
+from tabulate import tabulate;
 
 # 确保从 core.utils.tts 导入 create_tts_instance
 from core.utils.tts import create_instance as create_tts_instance
-from config.settings import load_config
+from config.settings import load_tester_config
 
 # 设置全局日志级别为 WARNING
 logging.basicConfig(level=logging.WARNING)
@@ -18,7 +21,7 @@ description = "非流式语音合成性能测试"
 
 class TTSPerformanceTester:
     def __init__(self):
-        self.config = load_config()
+        self.config = load_tester_config()
         self.test_sentences = self.config.get("module_test", {}).get(
             "test_sentences",
             [
@@ -52,7 +55,7 @@ class TTSPerformanceTester:
 
             if not tmp_file or not os.path.exists(tmp_file):
                 print(f"{tts_name} 连接失败")
-                return {"name": tts_name, "errors": 1}
+                return {"name": tts_name, "errors": 2}
 
             total_time = 0
             test_count = len(self.test_sentences[:3])
@@ -68,7 +71,7 @@ class TTSPerformanceTester:
                     print(f"{tts_name} [{i}/{test_count}] 测试成功")
                 else:
                     print(f"{tts_name} [{i}/{test_count}] 测试失败")
-                    return {"name": tts_name, "errors": 1}
+                    return {"name": tts_name, "errors": 3}
 
             return {
                 "name": tts_name,
@@ -78,7 +81,7 @@ class TTSPerformanceTester:
 
         except Exception as e:
             print(f"{tts_name} 测试失败: {str(e)}")
-            return {"name": tts_name, "errors": 1}
+            return {"name": tts_name, "errors": 4}
 
     def _print_results(self):
         """打印测试结果"""

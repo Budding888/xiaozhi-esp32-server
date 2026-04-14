@@ -1,5 +1,5 @@
 import os
-from config.config_loader import read_config, get_project_dir, load_config
+from config.config_loader import read_config, get_project_dir, load_config, load_tester_config
 
 
 default_config_file = "config.yaml"

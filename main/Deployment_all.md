@@ -1,11 +1,7 @@
+
+
+
 # [项目部署说明文档](https://gitee.com/zhangzq0521/xiaozhi-esp32-server-bak/blob/main/docs/Deployment_all.md)
-
-
-https://gitcode.com/gh_mirrors/xia/xiaozhi-esp32-server/tree/15b3f0a8f5199334054ec824ab9ea8bddbda780d
-
-
-
-
 
 # 部署架构图
 ![请参考-全模块安装架构图](../docs/images/deploy2.png)
@@ -385,7 +381,6 @@ conda install libiconv -y
 ```
 # 继续使用conda环境
 conda activate xiaozhi-esp32-server
-
 # 进入到你的项目根目录，再进入main/xiaozhi-server
 cd main/xiaozhi-server
 pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/

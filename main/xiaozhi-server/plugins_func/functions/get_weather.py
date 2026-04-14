@@ -109,6 +109,8 @@ WEATHER_CODE_MAP = {
 
 def fetch_city_info(location, api_key, api_host):
     url = f"https://{api_host}/geo/v2/city/lookup?key={api_key}&location={location}&lang=zh"
+    # 打印请求URL
+    logger.bind(tag=TAG).debug(f"获取城市信息请求URL：{url}")
     response = requests.get(url, headers=HEADERS).json()
     if response.get("error") is not None:
         logger.bind(tag=TAG).error(
@@ -119,6 +121,8 @@ def fetch_city_info(location, api_key, api_host):
 
 
 def fetch_weather_page(url):
+    # 打印请求URL
+    logger.bind(tag=TAG).debug(f"获取天气页面请求URL：{url}")
     response = requests.get(url, headers=HEADERS)
     return BeautifulSoup(response.text, "html.parser") if response.ok else None
 
@@ -159,9 +163,9 @@ def get_weather(conn, location: str = None, lang: str = "zh_CN"):
     from core.utils.cache.manager import cache_manager, CacheType
 
     weather_config = conn.config.get("plugins", {}).get("get_weather", {})
-    api_host = weather_config.get("api_host", "mj7p3y7naa.re.qweatherapi.com")
-    api_key = weather_config.get("api_key", "a861d0d5e7bf4ee1a83d9a9e4f96d4da")
-    default_location = weather_config.get("default_location", "广州")
+    api_host = weather_config.get("api_host", "mu7qqth55c.re.qweatherapi.com")
+    api_key = weather_config.get("api_key", "62ec43249cc445e0ad7d8af9c08e2a84")
+    default_location = weather_config.get("default_location", "西安")
     client_ip = conn.client_ip
 
     # 优先使用用户提供的location参数
@@ -191,6 +195,10 @@ def get_weather(conn, location: str = None, lang: str = "zh_CN"):
         return ActionResponse(Action.REQLLM, cached_weather_report, None)
 
     # 缓存未命中，获取实时天气数据
+    # 打印location
+    logger.bind(tag=TAG).debug(f"获取天气信息请求位置：{location}")
+    logger.bind(tag=TAG).debug(f"天气预报-api_key：{api_key}")
+    logger.bind(tag=TAG).debug(f"天气预报-api_host：{api_host}")
     city_info = fetch_city_info(location, api_key, api_host)
     if not city_info:
         return ActionResponse(
