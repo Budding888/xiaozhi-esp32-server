@@ -1,9 +1,16 @@
 import json
+from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from core.connection import ConnectionHandler
 TAG = __name__
 
 
-async def handleAbortMessage(conn):
+async def handleAbortMessage(conn: "ConnectionHandler"):
+    if conn.close_after_chat or conn.is_exiting:
+        conn.logger.bind(tag=TAG).info("退出流程中被打断，直接关闭连接")
+        return
+        
     conn.logger.bind(tag=TAG).info("Abort message received")
     # 设置成打断状态，会自动打断llm、tts任务
     conn.client_abort = True

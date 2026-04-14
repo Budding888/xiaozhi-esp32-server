@@ -1,18 +1,19 @@
 import time
 import json
+import uuid
 import random
 import asyncio
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.connection import ConnectionHandler
 from core.utils.dialogue import Message
 from core.utils.util import audio_to_data
 from core.providers.tts.dto.dto import SentenceType
 from core.utils.wakeup_word import WakeupWordsConfig
 from core.handle.sendAudioHandle import sendAudioMessage, send_tts_message
 from core.utils.util import remove_punctuation_and_length, opus_datas_to_wav_bytes
-from core.providers.tools.device_mcp import (
-    MCPClient,
-    send_mcp_initialize_message,
-    send_mcp_tools_list_request,
-)
+from core.providers.tools.device_mcp import MCPClient, send_mcp_initialize_message
 
 TAG = __name__
 
@@ -38,7 +39,7 @@ wakeup_words_config = WakeupWordsConfig()
 _wakeup_response_lock = asyncio.Lock()
 
 
-async def handleHelloMessage(conn, msg_json):
+async def handleHelloMessage(conn: "ConnectionHandler", msg_json):
     """处理hello消息"""
     audio_params = msg_json.get("audio_params")
     if audio_params:
@@ -55,13 +56,11 @@ async def handleHelloMessage(conn, msg_json):
             conn.mcp_client = MCPClient()
             # 发送初始化
             asyncio.create_task(send_mcp_initialize_message(conn))
-            # 发送mcp消息，获取tools列表
-            asyncio.create_task(send_mcp_tools_list_request(conn))
 
     await conn.websocket.send(json.dumps(conn.welcome_msg))
 
 
-async def checkWakeupWords(conn, text):
+async def checkWakeupWords(conn: "ConnectionHandler", text):
     enable_wakeup_words_response_cache = conn.config[
         "enable_wakeup_words_response_cache"
     ]
@@ -105,6 +104,9 @@ async def checkWakeupWords(conn, text):
     # 播放唤醒词回复
     conn.client_abort = False
 
+    # 将唤醒词回复视为新会话，生成新的 sentence_id，确保流控器重置
+    conn.sentence_id = str(uuid.uuid4().hex)
+
     conn.logger.bind(tag=TAG).info(f"播放唤醒词回复: {response.get('text')}")
     await sendAudioMessage(conn, SentenceType.FIRST, opus_packets, response.get("text"))
     await sendAudioMessage(conn, SentenceType.LAST, [], None)
@@ -119,7 +121,7 @@ async def checkWakeupWords(conn, text):
     return True
 
 
-async def wakeupWordsResponse(conn):
+async def wakeupWordsResponse(conn: "ConnectionHandler"):
     if not conn.tts:
         return
 
@@ -141,7 +143,8 @@ async def wakeupWordsResponse(conn):
         # 获取当前音色
         voice = getattr(conn.tts, "voice", "default")
 
-        wav_bytes = opus_datas_to_wav_bytes(tts_result, sample_rate=16000)
+        # 使用链接的sample_rate
+        wav_bytes = opus_datas_to_wav_bytes(tts_result, sample_rate=conn.sample_rate)
         file_path = wakeup_words_config.generate_file_path(voice)
         with open(file_path, "wb") as f:
             f.write(wav_bytes)

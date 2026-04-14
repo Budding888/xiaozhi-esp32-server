@@ -17,8 +17,22 @@ class LLMProvider(LLMProviderBase):
             self.base_url = config.get("base_url")
         else:
             self.base_url = config.get("url")
-        timeout = config.get("timeout", 300)
-        self.timeout = int(timeout) if timeout else 300
+        
+        timeout_config = config.get("timeout")
+        if isinstance(timeout_config, dict):
+            # 细粒度超时配置
+            custom_timeout = httpx.Timeout(
+                pool=timeout_config.get("pool", 2.0),
+                connect=timeout_config.get("connect", 3.0),
+                write=timeout_config.get("write", 5.0),
+                read=timeout_config.get("read", 60.0)
+            )
+        elif isinstance(timeout_config, (int, float)) and timeout_config > 0:
+            # 兼容旧的单一超时配置（整数或浮点数）
+            custom_timeout = httpx.Timeout(timeout_config)
+        else:
+            # 未配置或配置无效，使用默认值
+            custom_timeout = httpx.Timeout(300)
 
         param_defaults = {
             "max_tokens": int,
@@ -45,7 +59,7 @@ class LLMProvider(LLMProviderBase):
         model_key_msg = check_model_key("LLM", self.api_key)
         if model_key_msg:
             logger.bind(tag=TAG).error(model_key_msg)
-        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=httpx.Timeout(self.timeout))
+        self.client = openai.OpenAI(api_key=self.api_key, base_url=self.base_url, timeout=custom_timeout)
 
     @staticmethod
     def normalize_dialogue(dialogue):
@@ -56,87 +70,78 @@ class LLMProvider(LLMProviderBase):
         return dialogue
 
     def response(self, session_id, dialogue, **kwargs):
-        try:
-            dialogue = self.normalize_dialogue(dialogue)
+        dialogue = self.normalize_dialogue(dialogue)
 
-            request_params = {
-                "model": self.model_name,
-                "messages": dialogue,
-                "stream": True,
-            }
+        request_params = {
+            "model": self.model_name,
+            "messages": dialogue,
+            "stream": True,
+        }
 
-            # 添加可选参数,只有当参数不为None时才添加
-            optional_params = {
-                "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-                "temperature": kwargs.get("temperature", self.temperature),
-                "top_p": kwargs.get("top_p", self.top_p),
-                "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
-            }
+        # 添加可选参数,只有当参数不为None时才添加
+        optional_params = {
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature),
+            "top_p": kwargs.get("top_p", self.top_p),
+            "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
+        }
 
-            for key, value in optional_params.items():
-                if value is not None:
-                    request_params[key] = value
+        for key, value in optional_params.items():
+            if value is not None:
+                request_params[key] = value
 
-            responses = self.client.chat.completions.create(**request_params)
+        responses = self.client.chat.completions.create(**request_params)
 
-            is_active = True
-            for chunk in responses:
-                try:
-                    delta = chunk.choices[0].delta if getattr(chunk, "choices", None) else None
-                    content = getattr(delta, "content", "") if delta else ""
-                except IndexError:
-                    content = ""
-                if content:
-                    if "<think>" in content:
-                        is_active = False
-                        content = content.split("<think>")[0]
-                    if "</think>" in content:
-                        is_active = True
-                        content = content.split("</think>")[-1]
-                    if is_active:
-                        yield content
-
-        except Exception as e:
-            logger.bind(tag=TAG).error(f"Error in response generation: {e}")
+        is_active = True
+        for chunk in responses:
+            try:
+                delta = chunk.choices[0].delta if getattr(chunk, "choices", None) else None
+                content = getattr(delta, "content", "") if delta else ""
+            except IndexError:
+                content = ""
+            if content:
+                if "<think>" in content:
+                    is_active = False
+                    content = content.split("<think>")[0]
+                if "</think>" in content:
+                    is_active = True
+                    content = content.split("</think>")[-1]
+                if is_active:
+                    yield content
 
     def response_with_functions(self, session_id, dialogue, functions=None, **kwargs):
-        try:
-            dialogue = self.normalize_dialogue(dialogue)
+        dialogue = self.normalize_dialogue(dialogue)
 
-            request_params = {
-                "model": self.model_name,
-                "messages": dialogue,
-                "stream": True,
-                "tools": functions,
-            }
+        request_params = {
+            "model": self.model_name,
+            "messages": dialogue,
+            "stream": True,
+            "tools": functions,
+        }
 
-            optional_params = {
-                "max_tokens": kwargs.get("max_tokens", self.max_tokens),
-                "temperature": kwargs.get("temperature", self.temperature),
-                "top_p": kwargs.get("top_p", self.top_p),
-                "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
-            }
+        optional_params = {
+            "max_tokens": kwargs.get("max_tokens", self.max_tokens),
+            "temperature": kwargs.get("temperature", self.temperature),
+            "top_p": kwargs.get("top_p", self.top_p),
+            "frequency_penalty": kwargs.get("frequency_penalty", self.frequency_penalty),
+        }
 
-            for key, value in optional_params.items():
-                if value is not None:
-                    request_params[key] = value
+        for key, value in optional_params.items():
+            if value is not None:
+                request_params[key] = value
 
-            stream = self.client.chat.completions.create(**request_params)
+        stream = self.client.chat.completions.create(**request_params)
 
-            for chunk in stream:
-                if getattr(chunk, "choices", None):
-                    delta = chunk.choices[0].delta
-                    content = getattr(delta, "content", "")
-                    tool_calls = getattr(delta, "tool_calls", None)
-                    yield content, tool_calls
-                elif isinstance(getattr(chunk, "usage", None), CompletionUsage):
-                    usage_info = getattr(chunk, "usage", None)
-                    logger.bind(tag=TAG).info(
-                        f"Token 消耗：输入 {getattr(usage_info, 'prompt_tokens', '未知')}，"
-                        f"输出 {getattr(usage_info, 'completion_tokens', '未知')}，"
-                        f"共计 {getattr(usage_info, 'total_tokens', '未知')}"
-                    )
-
-        except Exception as e:
-            logger.bind(tag=TAG).error(f"Error in function call streaming: {e}")
-            yield f"【OpenAI服务响应异常: {e}】", None
+        for chunk in stream:
+            if getattr(chunk, "choices", None):
+                delta = chunk.choices[0].delta
+                content = getattr(delta, "content", "")
+                tool_calls = getattr(delta, "tool_calls", None)
+                yield content, tool_calls
+            elif isinstance(getattr(chunk, "usage", None), CompletionUsage):
+                usage_info = getattr(chunk, "usage", None)
+                logger.bind(tag=TAG).info(
+                    f"Token 消耗：输入 {getattr(usage_info, 'prompt_tokens', '未知')}，"
+                    f"输出 {getattr(usage_info, 'completion_tokens', '未知')}，"
+                    f"共计 {getattr(usage_info, 'total_tokens', '未知')}"
+                )

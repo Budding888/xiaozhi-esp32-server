@@ -14,6 +14,7 @@ import org.springframework.stereotype.Service;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 
 import lombok.RequiredArgsConstructor;
+import xiaozhi.common.constant.Constant;
 import xiaozhi.modules.agent.dto.AgentChatHistoryDTO;
 import xiaozhi.modules.agent.dto.AgentChatSummaryDTO;
 import xiaozhi.modules.agent.dto.AgentMemoryDTO;
@@ -21,6 +22,7 @@ import xiaozhi.modules.agent.dto.AgentUpdateDTO;
 import xiaozhi.modules.agent.entity.AgentChatHistoryEntity;
 import xiaozhi.modules.agent.service.AgentChatHistoryService;
 import xiaozhi.modules.agent.service.AgentChatSummaryService;
+import xiaozhi.modules.agent.service.AgentChatTitleService;
 import xiaozhi.modules.agent.service.AgentService;
 import xiaozhi.modules.agent.vo.AgentInfoVO;
 import xiaozhi.modules.device.entity.DeviceEntity;
@@ -41,6 +43,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
 
     private final AgentChatHistoryService agentChatHistoryService;
     private final AgentService agentService;
+    private final AgentChatTitleService agentChatTitleService;
     private final DeviceService deviceService;
     private final LLMService llmService;
     private final ModelConfigService modelConfigService;
@@ -78,11 +81,11 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
             // 4. 生成总结（generateSummaryFromMessages方法已包含长度限制逻辑）
             String summary = generateSummaryFromMessages(meaningfulMessages, agentId);
 
-            System.out.println("成功生成会话 " + sessionId + " 的聊天记录总结，长度: " + summary.length() + " 字符");
+            log.info("成功生成会话 {} 的聊天记录总结，长度: {} 字符", sessionId, summary.length());
             return new AgentChatSummaryDTO(sessionId, agentId, summary);
 
         } catch (Exception e) {
-            System.err.println("生成会话 " + sessionId + " 的聊天记录总结时发生错误: " + e.getMessage());
+            log.error("生成会话 {} 的聊天记录总结时发生错误: {}", sessionId, e.getMessage());
             return new AgentChatSummaryDTO(sessionId, "生成总结时发生错误: " + e.getMessage());
         }
     }
@@ -90,38 +93,128 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
     @Override
     public boolean generateAndSaveChatSummary(String sessionId) {
         try {
-            // 1. 生成总结
-            AgentChatSummaryDTO summaryDTO = generateChatSummary(sessionId);
-            if (!summaryDTO.isSuccess()) {
-                System.err.println("生成总结失败: " + summaryDTO.getErrorMessage());
-                return false;
-            }
-
-            // 2. 获取设备信息（通过会话关联的设备）
             DeviceEntity device = getDeviceBySessionId(sessionId);
             if (device == null) {
-                System.err.println("未找到与会话 " + sessionId + " 关联的设备");
+                log.info("未找到与会话 {} 关联的设备", sessionId);
                 return false;
             }
 
-            // 3. 更新智能体记忆
-            AgentMemoryDTO memoryDTO = new AgentMemoryDTO();
-            memoryDTO.setSummaryMemory(summaryDTO.getSummary());
+            String agentId = device.getAgentId();
+            String memModelId = agentService.getAgentById(agentId).getMemModelId();
 
-            // 调用现有接口更新记忆
-            agentService.updateAgentById(device.getAgentId(),
-                    new AgentUpdateDTO() {
+            if (memModelId == null || memModelId.equals(Constant.MEMORY_MEM_REPORT_ONLY)) {
+                log.info("会话 {} 使用仅上报聊天记录模式，跳过记忆总结", sessionId);
+                generateAndSaveChatTitle(sessionId, agentId);
+                return true;
+            }
+
+            boolean shouldSummarizeMemory = !memModelId.equals(Constant.MEMORY_NO_MEM)
+                    && !memModelId.equals(Constant.MEMORY_MEM0AI)
+                    && !memModelId.equals(Constant.MEMORY_POWERMEM);
+
+            if (shouldSummarizeMemory) {
+                AgentChatSummaryDTO summaryDTO = generateChatSummary(sessionId);
+                if (summaryDTO.isSuccess()) {
+                    agentService.updateAgentById(agentId, new AgentUpdateDTO() {
                         {
                             setSummaryMemory(summaryDTO.getSummary());
                         }
                     });
+                    log.info("成功保存会话 {} 的聊天记录总结到智能体 {}", sessionId, agentId);
+                } else {
+                    log.info("生成总结失败: {}", summaryDTO.getErrorMessage());
+                }
+            } else {
+                log.info("会话 {} 使用 {} 模式，跳过记忆总结", sessionId, memModelId);
+            }
 
-            System.out.println("成功保存会话 " + sessionId + " 的聊天记录总结到智能体 " + device.getAgentId());
+            generateAndSaveChatTitle(sessionId, agentId);
             return true;
 
         } catch (Exception e) {
-            System.err.println("保存会话 " + sessionId + " 的聊天记录总结时发生错误: " + e.getMessage());
+            log.error("保存会话 {} 的聊天记录总结时发生错误: {}", sessionId, e.getMessage());
             return false;
+        }
+    }
+
+    private void generateAndSaveChatTitle(String sessionId, String agentId) {
+        try {
+            List<AgentChatHistoryDTO> chatHistory = getChatHistoryBySessionId(sessionId);
+            if (chatHistory == null || chatHistory.isEmpty()) {
+                return;
+            }
+
+            List<String> meaningfulMessages = extractMeaningfulMessages(chatHistory);
+            if (meaningfulMessages.isEmpty()) {
+                return;
+            }
+
+            StringBuilder conversation = new StringBuilder();
+            for (int i = 0; i < meaningfulMessages.size(); i++) {
+                conversation.append("消息").append(i + 1).append(": ").append(meaningfulMessages.get(i)).append("\n");
+            }
+
+            String slmModelId = getSlmModelId(agentId);
+            String title = llmService.generateTitle(conversation.toString(), slmModelId);
+
+            if (StringUtils.isNotBlank(title)) {
+                agentChatTitleService.saveOrUpdateTitle(sessionId, title);
+                log.info("成功保存会话 {} 的标题: {}", sessionId, title);
+            }
+        } catch (Exception e) {
+            log.error("生成会话 {} 的标题时发生错误: {}", sessionId, e.getMessage());
+        }
+    }
+
+    private String getSlmModelId(String agentId) {
+        try {
+            if (StringUtils.isBlank(agentId)) {
+                return null;
+            }
+
+            AgentInfoVO agentInfo = agentService.getAgentById(agentId);
+            if (agentInfo == null) {
+                return null;
+            }
+
+            String slmModelId = agentInfo.getSlmModelId();
+            if (StringUtils.isNotBlank(slmModelId)) {
+                log.info("会话 {} 使用SLM模型: {}", agentId, slmModelId);
+                return slmModelId;
+            }
+
+            ModelConfigEntity defaultLlmConfig = getDefaultLLMConfig();
+            if (defaultLlmConfig != null) {
+                log.info("会话 {} 使用默认LLM模型: {}", agentId, defaultLlmConfig.getId());
+                return defaultLlmConfig.getId();
+            }
+
+            String llmModelId = agentInfo.getLlmModelId();
+            log.info("会话 {} 使用LLM模型(最终回退): {}", agentId, llmModelId);
+            return llmModelId;
+        } catch (Exception e) {
+            log.error("获取智能体slm模型ID失败，agentId: {}, 错误: {}", agentId, e.getMessage());
+            return null;
+        }
+    }
+
+    private ModelConfigEntity getDefaultLLMConfig() {
+        try {
+            List<ModelConfigEntity> llmConfigs = modelConfigService.getEnabledModelsByType("LLM");
+            if (llmConfigs == null || llmConfigs.isEmpty()) {
+                return null;
+            }
+
+            for (ModelConfigEntity config : llmConfigs) {
+                if (config.getIsDefault() != null && config.getIsDefault() == 1) {
+                    return config;
+                }
+            }
+
+            return llmConfigs.get(0);
+        } catch (Exception e) {
+            log.error("获取默认LLM配置失败: {}", e.getMessage());
+            return null;
         }
     }
 
@@ -138,7 +231,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
             }
             return agentChatHistoryService.getChatHistoryBySessionId(agentId, sessionId);
         } catch (Exception e) {
-            System.err.println("获取会话 " + sessionId + " 的聊天记录失败: " + e.getMessage());
+            log.error("获取会话 {} 的聊天记录失败: {}", sessionId, e.getMessage());
             return null;
         }
     }
@@ -157,7 +250,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
             AgentChatHistoryEntity entity = agentChatHistoryService.getOne(wrapper);
             return entity != null ? entity.getAgentId() : null;
         } catch (Exception e) {
-            System.err.println("根据会话ID " + sessionId + " 查找智能体ID失败: " + e.getMessage());
+            log.error("根据会话ID {} 查找智能体ID失败: {}", sessionId, e.getMessage());
             return null;
         }
     }
@@ -272,7 +365,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
 
             return summary;
         } catch (Exception e) {
-            System.err.println("调用Java端LLM服务失败: " + e.getMessage());
+            log.error("调用Java端LLM服务失败: {}", e.getMessage());
             throw new RuntimeException("LLM服务不可用，无法生成聊天总结");
         }
     }
@@ -295,7 +388,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
             // 返回智能体的当前总结记忆
             return agentInfo.getSummaryMemory();
         } catch (Exception e) {
-            System.err.println("获取智能体历史记忆失败，agentId: " + agentId + ", 错误: " + e.getMessage());
+            log.error("获取智能体历史记忆失败，agentId: {}, 错误: {}", agentId, e.getMessage());
             return null;
         }
     }
@@ -305,15 +398,13 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
      */
     private String callJavaLLMForSummaryWithHistory(String conversation, String historyMemory, String agentId) {
         try {
-            // 获取智能体配置，从中提取记忆总结的模型ID
-            String modelId = getMemorySummaryModelId(agentId);
+            String modelId = getSlmModelId(agentId);
 
             if (StringUtils.isBlank(modelId)) {
-                System.out.println("未找到记忆总结的LLM模型配置，使用默认LLM服务");
+                log.info("未找到SLM模型，使用默认LLM服务");
                 return llmService.generateSummaryWithHistory(conversation, historyMemory, null, null);
             }
 
-            // 使用指定的模型ID调用LLM服务（支持历史记忆合并）
             String summary = llmService.generateSummaryWithHistory(conversation, historyMemory, null, modelId);
 
             if (StringUtils.isNotBlank(summary) && !summary.equals("服务暂不可用") && !summary.equals("总结生成失败")) {
@@ -323,7 +414,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
             throw new RuntimeException("Java端LLM服务返回异常: " + summary);
 
         } catch (Exception e) {
-            System.err.println("调用Java端LLM服务异常，agentId: " + agentId + ", 错误: " + e.getMessage());
+            log.error("调用Java端LLM服务异常，agentId: {}, 错误: {}", agentId, e.getMessage());
             throw e;
         }
     }
@@ -333,15 +424,13 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
      */
     private String callJavaLLMForSummary(String conversation, String agentId) {
         try {
-            // 获取智能体配置，从中提取记忆总结的模型ID
-            String modelId = getMemorySummaryModelId(agentId);
+            String modelId = getSlmModelId(agentId);
 
             if (StringUtils.isBlank(modelId)) {
-                System.out.println("未找到记忆总结的LLM模型配置，使用默认LLM服务");
+                log.info("未找到SLM模型，使用默认LLM服务");
                 return llmService.generateSummary(conversation);
             }
 
-            // 使用指定的模型ID调用LLM服务
             String summary = llmService.generateSummaryWithModel(conversation, modelId);
 
             if (StringUtils.isNotBlank(summary) && !summary.equals("服务暂不可用") && !summary.equals("总结生成失败")) {
@@ -351,7 +440,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
             throw new RuntimeException("Java端LLM服务返回异常: " + summary);
 
         } catch (Exception e) {
-            System.err.println("调用Java端LLM服务异常，agentId: " + agentId + ", 错误: " + e.getMessage());
+            log.error("调用Java端LLM服务异常，agentId: {}, 错误: {}", agentId, e.getMessage());
             throw e;
         }
     }
@@ -394,7 +483,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
 
             return llmModelId;
         } catch (Exception e) {
-            System.err.println("获取记忆总结LLM模型ID失败，agentId: " + agentId + ", 错误: " + e.getMessage());
+            log.error("获取记忆总结LLM模型ID失败，agentId: {}, 错误: {}", agentId, e.getMessage());
             return null;
         }
     }
@@ -416,7 +505,7 @@ public class AgentChatSummaryServiceImpl implements AgentChatSummaryService {
             }
             return null;
         } catch (Exception e) {
-            System.err.println("根据会话ID " + sessionId + " 查找设备信息失败: " + e.getMessage());
+            log.error("根据会话ID {} 查找设备信息失败: {}", sessionId, e.getMessage());
             return null;
         }
     }

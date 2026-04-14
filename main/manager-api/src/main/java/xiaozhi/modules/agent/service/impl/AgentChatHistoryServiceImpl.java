@@ -5,6 +5,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import cn.hutool.core.collection.ListUtil;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,12 +20,14 @@ import xiaozhi.common.constant.Constant;
 import xiaozhi.common.page.PageData;
 import xiaozhi.common.utils.ConvertUtils;
 import xiaozhi.common.utils.JsonUtils;
+import xiaozhi.common.utils.ToolUtil;
 import xiaozhi.modules.agent.Enums.AgentChatHistoryType;
 import xiaozhi.modules.agent.dao.AiAgentChatHistoryDao;
 import xiaozhi.modules.agent.dto.AgentChatHistoryDTO;
 import xiaozhi.modules.agent.dto.AgentChatSessionDTO;
 import xiaozhi.modules.agent.entity.AgentChatHistoryEntity;
 import xiaozhi.modules.agent.service.AgentChatHistoryService;
+import xiaozhi.modules.agent.service.AgentChatTitleService;
 import xiaozhi.modules.agent.vo.AgentChatHistoryUserVO;
 
 /**
@@ -34,8 +38,11 @@ import xiaozhi.modules.agent.vo.AgentChatHistoryUserVO;
  * @since 1.0.0
  */
 @Service
+@RequiredArgsConstructor
 public class AgentChatHistoryServiceImpl extends ServiceImpl<AiAgentChatHistoryDao, AgentChatHistoryEntity>
         implements AgentChatHistoryService {
+
+    private final AgentChatTitleService agentChatTitleService;
 
     @Override
     public PageData<AgentChatSessionDTO> getSessionListByAgentId(Map<String, Object> params) {
@@ -59,6 +66,7 @@ public class AgentChatHistoryServiceImpl extends ServiceImpl<AiAgentChatHistoryD
             dto.setSessionId((String) map.get("session_id"));
             dto.setCreatedAt((LocalDateTime) map.get("created_at"));
             dto.setChatCount(((Number) map.get("chat_count")).intValue());
+            dto.setTitle(agentChatTitleService.getTitleBySessionId(dto.getSessionId()));
             return dto;
         }).collect(Collectors.toList());
 
@@ -86,13 +94,12 @@ public class AgentChatHistoryServiceImpl extends ServiceImpl<AiAgentChatHistoryD
         if (deleteAudio) {
             // 分批删除音频,避免超时
             List<String> audioIds = baseMapper.getAudioIdsByAgentId(agentId);
-            if (audioIds != null && !audioIds.isEmpty()) {
-                int batchSize = 1000; // 每批删除1000条
-                for (int i = 0; i < audioIds.size(); i += batchSize) {
-                    int end = Math.min(i + batchSize, audioIds.size());
-                    List<String> batch = audioIds.subList(i, end);
-                    baseMapper.deleteAudioByIds(batch);
-                }
+            if (ToolUtil.isNotEmpty(audioIds)) {
+                // 每批删除1000条
+                List<List<String>> batch = ListUtil.split(audioIds, 1000);
+                batch.forEach(dataList -> {
+                    baseMapper.deleteAudioByIds(dataList);
+                });
             }
         }
         if (deleteAudio && !deleteText) {
