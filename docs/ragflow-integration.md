@@ -181,7 +181,11 @@ REDIS_PORT=6379                  # 本地Redis端口
 REDIS_PASSWORD=                  # 如果你的Redis没有设置密码，就按这样子填写，否则填写密码
 ```
 
-注意，如果你的Redis没有设置密码，还要修改`ragflow/docker`文件夹下`service_conf.yaml.template`，将`infini_rag_flow`替换成空字符串。
+注意：
+
+（1）windows环境下：redis的版本不能太低，建议使用最新版，最好设置密码。否则ragflow连接redis会报错，在搭建环境时使用的redis版本是Redis-x64-5.0.14.1。
+
+（2）如果你的Redis没有设置密码，还要修改`ragflow/docker`文件夹下`service_conf.yaml.template`，将`infini_rag_flow`替换成空字符串。
 
 修改前
 ``` shell
@@ -199,16 +203,74 @@ redis:
 ```
 
 ## 第五步，启动ragflow服务
-执行命令：
+执行【启动】命令：
 ``` shell
 docker-compose -f docker-compose.yml up -d
 ```
 执行成功后，你可以使用`docker logs -n 20 -f docker-ragflow-cpu-1`命令，查看`docker-ragflow-cpu-1`服务的日志。
-
 如果日志中没有报错，说明ragflow服务启动成功。
 
+
+执行【停止】命令：
+``` shell
+docker-compose -f docker-compose.yml down
+```
+
+
+
+如果启动报错：1200端口被占用
+```angular2html
+Error response from daemon: ports are not available: exposing port TCP 0.0.0.0:1200 -> 127.0.0.1:0: listen tcp 0.0.0.0:1200: bind: An attempt was made to access a socket in a way forbidden by its access permissions.
+这个错误是Windows 下 Docker 端口被占用 / 被系统保留 / 权限不足导致的，核心原因：1200 端口无法绑定，系统禁止使用。
+我给你最直接、一步到位的解决方法（按顺序试，99% 能解决）：
+一、最快解决：直接换个端口（推荐）
+不用查占用，直接把 1200 改成别的端口，比如：
+1201
+1300
+8080
+8090
+例如你原来的命令是：
+bash
+运行
+-p 1200:1200
+改成：
+bash
+运行
+-p 1300:1200
+立刻就能跑起来。
+
+二、如果你必须用 1200 端口（完整修复）
+1. 先看谁占用了 1200
+以管理员身份打开 CMD / PowerShell，运行：
+netstat -ano | findstr ":1200"
+如果有输出，说明被其他程序占用。记下最后那串数字（PID），打开任务管理器 → 详细信息 → 结束对应 PID 进程。
+
+2. 最常见原因：Windows 保留了这段端口（Hyper-V 导致）
+很多人安装了 WSL / Hyper-V，系统会自动保留一段端口，刚好把 1200 包含进去，所以 Docker 无权使用。
+
+管理员权限执行下面 3 条命令：
+查看被保留端口范围
+netsh int ipv4 show excludedportrange protocol=tcp
+你会看到 1200 落在一段禁止端口里。
+
+释放保留端口
+net stop winnat
+
+重启端口服务
+net start winnat
+
+然后重启 Docker Desktop，再跑容器就正常了。
+
+3. 终极解决：永久排除 1200 端口不被系统占用
+将.env文件中中的1200端口和1201端口改为排序序列之外的端口，即可解决此端口占用的问题
+
+修改完成之后，再重启镜像服务可正常使用
+```
+
+
+
 # 第五步，注册账号
-你可以在浏览器中访问`http://127.0.0.1:8008`，点击`Sign Up`，注册一个账号。
+你可以在浏览器中访问`http://127.0.0.1:8008`，点击`Sign Up`，注册一个账号【renalysis/renalysis】。
 
 注册成功后，你可以点击`Sign In`，登录到ragflow服务。如果你想关闭ragflow服务的注册服务，不想让其他人注册账号，你可以在`ragflow/docker`文件夹下的`.env`文件中，将`REGISTER_ENABLED`配置项设置为`0`。
 
@@ -223,9 +285,47 @@ docker-compose -f docker-compose.yml up -d
 
 # 第六步，配置ragflow服务的模型
 你可以在浏览器中访问`http://127.0.0.1:8008`，点击`Sign In`，登录到ragflow服务。点击页面右上角的`头像`，进入设置页面。
-首先，在左侧导航栏中，点击`模型供应商`，进入到模型配置页面。在右侧的`可选模型`搜索框下，选择`LLM`，在列表选择你使用的模型供应商，点击`添加`，输入你的密钥；
-然后，选择`TEXT EMBEDDING`，在列表选择你使用的模型供应商，点击`添加`，输入你的密钥。
-最后，刷新一下页面，分别点击`设置默认模型`列表的LLM和Embedding，选择你使用的模型即可。请确认你的密钥开通了相应的服务，比如我是用的Embedding模型是xxx供应商的，需要去这个供应商官网查看这个模型是否需要购买资源包才能使用。
+
+(1)首先，在左侧导航栏中，点击`模型供应商`，进入到模型配置页面。在右侧的`可选模型`搜索框下，选择`LLM`，在列表选择你使用的模型供应商，点击`添加`，输入你的密钥；
+
+(2)然后，选择`TEXT EMBEDDING`，在列表选择你使用的模型供应商，点击`添加`，输入你的密钥。
+
+(3)最后，刷新一下页面，分别点击`设置默认模型`列表的LLM和Embedding，选择你使用的模型即可。请确认你的密钥开通了相应的服务，比如我是用的Embedding模型是xxx供应商的，需要去这个供应商官网查看这个模型是否需要购买资源包才能使用。
+
+
+#### 给ragflow配置本地模型的相关过程记录如下：
+
+1.[ragflow服务模型 可配置的免费的大语言模型LLM有哪些?](https://www.doubao.com/thread/w72d11630085b668a)
+
+2.[LLM 通俗大白话介绍](https://www.doubao.com/thread/w3dcce8018d3da946)
+
+3.[Windows安装Ollama](https://www.doubao.com/thread/w086ab2ca30d5dd09)
+
+4.[ollama官网](https://ollama.com/download)
+
+5.[128G内存的电脑 适合部署哪个qwen模型？](https://www.doubao.com/thread/w95419e07403508d2)
+
+
+OllamaSetup的默认安装路径是C盘
+6.[OllamaSetup安装路径如何自定义？](https://www.doubao.com/thread/w5b372f794ee2cc48)
+"D:\软件\开发软件\OllamaSetup.exe" /DIR="D:\AI\Ollama"
+
+
+7.[Windows Ollama常用命令](https://www.doubao.com/thread/w46fd03368a86b04c)
+
+
+8.[RAGFlow web界面如何配置ollama](https://www.doubao.com/thread/wbaf17693f60b1551)
+
+
+
+9.[ragflow文档解析报错 Task has been received. Page(1~9): [ERROR]Fail to bind embedding model: Model(@None) not authorized [ERROR][Exception]: Model(@None) not authorized](https://www.doubao.com/thread/we3cd77f6f1aeb162)
+下载并安装Embedding向量模型
+ollama pull nomic-embed-text
+
+
+
+10.[RAGFlow Ollama Qwen 最大Token 标准答案](https://www.doubao.com/thread/wbcec37870dee8cbe)
+
 
 
 # 第二部分 配置ragflow服务

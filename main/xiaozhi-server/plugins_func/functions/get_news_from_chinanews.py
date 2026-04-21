@@ -135,6 +135,22 @@ def map_category(category_text):
         "财经新闻": "finance_rss_url",
         "金融": "finance_rss_url",
         "经济": "finance_rss_url",
+        # 要闻导读
+        "要闻": "importnews_rss_url",
+        "要闻导读": "importnews_rss_url",
+        "主要新闻": "importnews_rss_url",
+        # 即时新闻
+        "即时": "scroll_rss_url",
+        "即时新闻": "scroll_rss_url",
+        # 时政新闻
+        "时政": "china_rss_url",
+        "时政新闻": "china_rss_url",
+        # 健康
+        "健康": "jk_rss_url",
+        "健康新闻": "jk_rss_url",
+        # 体育新闻
+        "体育": "sports_rss_url",
+        "体育新闻": "sports_rss_url",
     }
 
     # 转换为小写并去除空格

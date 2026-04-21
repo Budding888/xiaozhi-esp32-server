@@ -142,8 +142,8 @@ plugins:
   # 申请地址：https://console.qweather.com/#/apps/create-key/over
   # 申请后通过这个链接可以找到自己的apihost：https://console.qweather.com/setting?lang=zh
   get_weather:
-#    api_host: "mj7p3y7naa.re.qweatherapi.com"
-#    api_key: "a861d0d5e7bf4ee1a83d9a9e4f96d4da"
+    #  api_host 和 api_key需要在智控台-智能体-角色配置-编辑功能 里面进行配置。下面这里配置的不会覆盖智控台中配置的。
+    # 具体的配置方法见 xiaozhi-esp32-server -docs- weather-integration.md
     api_host: "mu7qqth55c.re.qweatherapi.com"
     api_key: "62ec43249cc445e0ad7d8af9c08e2a84"
     default_location: "西安"
@@ -154,6 +154,11 @@ plugins:
     society_rss_url: "https://www.chinanews.com.cn/rss/society.xml"
     world_rss_url: "https://www.chinanews.com.cn/rss/world.xml"
     finance_rss_url: "https://www.chinanews.com.cn/rss/finance.xml"
+    scroll_rss_url: "https://www.chinanews.com.cn/rss/finance.xml"
+    importnews_rss_url: "https://www.chinanews.com.cn/rss/importnews.xml"
+    china_rss_url: "https://www.chinanews.com.cn/rss/china.xml"
+    jk_rss_url: "https://www.chinanews.com.cn/rss/jk.xml"
+    sports_rss_url: "https://www.chinanews.com.cn/rss/sports.xml"
   get_news_from_newsnow:
     url: "https://newsnow.busiyi.world/api/s?id="
     news_sources: "澎湃新闻;百度热搜;财联社"
@@ -235,8 +240,9 @@ selected_module:
   VLLM: ChatGLMVLLM
   # TTS将根据配置名称对应的type调用实际的TTS适配器
   TTS: EdgeTTS
-  # 记忆模块，默认不开启记忆；如果想使用超长记忆，推荐使用mem0ai；如果注重隐私，请使用本地的mem_local_short
-  Memory: nomem
+  # 记忆模块，默认不开启记忆；如果想使用超长记忆，推荐使用mem0ai；如果注重隐私，请使用本地的 mem_local_short
+  # Memory: nomem
+  Memory: mem_local_short
   # 意图识别模块开启后，可以播放音乐、控制音量、识别退出指令。
   # 不想开通意图识别，就设置成：nointent
   # 意图识别可使用intent_llm。优点：通用性强，缺点：增加串行前置意图识别模块，会增加处理时间，支持控制音量大小等iot操作
