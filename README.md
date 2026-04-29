@@ -226,6 +226,14 @@ Websocket接口地址: wss://2662r3426b.vicp.fun/xiaozhi/v1/
 
 如果您关心各组件的耗时，请查阅[小智各组件性能测试报告](https://github.com/xinnan-tech/xiaozhi-performance-research)，可按报告中的测试方法在您的环境中实际测试。
 
+
+
+[免费模型GLM-4-Flash-250414](https://docs.bigmodel.cn/cn/guide/models/free/glm-4-flash-250414#glm-4-flash-250414)
+
+
+
+
+
 #### 🔧 测试工具
 本项目提供以下测试工具，帮助您验证系统和选择合适的模型：
 
@@ -321,7 +329,20 @@ Websocket接口地址: wss://2662r3426b.vicp.fun/xiaozhi/v1/
 | 本地使用 | FunASR、SherpaASR | FunASR、SherpaASR |
 | 接口调用 | FunASRServer、火山引擎、科大讯飞、腾讯云、阿里云、百度云、OpenAI ASR | FunASRServer |
 
+
+| ASR 服务 | 是否永久免费 | 免费时长 | 方言支持 | 本地离线 |
+|---|---|---|---|---|
+| FunASRServer | ✅ 永久免费 | 无限 | 陕西 / 全方言 | ✅ 纯本地 |
+| 腾讯云 | ❌ 限时 | 月 5~10h | 优秀 | ❌ 云端联网 |
+| 百度云 | ❌ 长期限额 | 月 10h | 良好 | ❌ 云端联网 |
+| 阿里云 | ❌ 几乎无 | 新用户短期 | 优秀 | ❌ 云端联网 |
+| 科大讯飞 | ❌ 几乎无 | 新用户少量 | 顶尖 | ❌ 云端联网 |
+| 火山引擎 | ❌ 限时 | 试用额度 | 极强 | ❌ 云端联网 |
+| OpenAI | ❌ 全收费 | 0 | 极差 | ❌ 海外云端 |
+
 ---
+
+
 
 ### Voiceprint 声纹识别
 

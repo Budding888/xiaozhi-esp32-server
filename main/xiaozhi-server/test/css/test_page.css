@@ -21,7 +21,7 @@ body {
     left: 0;
     width: 100vw;
     height: 100vh;
-    background-image: url('../images/1.png');
+    background-image: url('../images/3.png');
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
@@ -237,9 +237,11 @@ body {
 /* ==================== 聊天消息流（弹幕样式） ==================== */
 .chat-container {
     position: absolute;
-    bottom: 150px;
-    right: 20px;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
     z-index: 100;
+    padding-top: 10%;
 }
 
 .chat-stream {
@@ -318,7 +320,7 @@ body {
     padding: 8px 12px;
     border-radius: 18px;
     font-size: 14px;
-    max-width: 250px;
+    max-width: 1000px;
     word-wrap: break-word;
     backdrop-filter: blur(10px);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1455,8 +1457,8 @@ body {
     }
 
     .chat-stream {
-        width: 350px;
-        max-height: 250px;
+        width: 1000px;
+        max-height: 300px;
     }
 
     .audio-visualizer {

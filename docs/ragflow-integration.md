@@ -293,7 +293,9 @@ docker-compose -f docker-compose.yml up -d
 (3)最后，刷新一下页面，分别点击`设置默认模型`列表的LLM和Embedding，选择你使用的模型即可。请确认你的密钥开通了相应的服务，比如我是用的Embedding模型是xxx供应商的，需要去这个供应商官网查看这个模型是否需要购买资源包才能使用。
 
 
-#### 给ragflow配置本地模型的相关过程记录如下：
+
+
+## ragflow本地模型部署与配置记录：
 
 1.[ragflow服务模型 可配置的免费的大语言模型LLM有哪些?](https://www.doubao.com/thread/w72d11630085b668a)
 
@@ -312,6 +314,15 @@ OllamaSetup的默认安装路径是C盘
 
 
 7.[Windows Ollama常用命令](https://www.doubao.com/thread/w46fd03368a86b04c)
+```
+一句话总结
+下载 = pull
+运行 = run
+看安装 = list
+看运行 = ps
+停止 = stop
+删除 = rm
+```
 
 
 8.[RAGFlow web界面如何配置ollama](https://www.doubao.com/thread/wbaf17693f60b1551)
@@ -325,6 +336,92 @@ ollama pull nomic-embed-text
 
 
 10.[RAGFlow Ollama Qwen 最大Token 标准答案](https://www.doubao.com/thread/wbcec37870dee8cbe)
+
+
+
+
+11. [Qwen2.5:32b 与 Qwen2.5:14b 性能全面对比](https://www.doubao.com/thread/wa1144451403a2655)
+12. https://feishu.doubao.com/docx/RH44dLktJocEqpxePkHcLZXnnMb?enter_from=public_link#
+    【豆包 AI 文档】Qwen2.5:32b 与 Qwen2.5:14b 性能全面对比
+
+13. [三款模型对比：Qwen3-8B、Qwen2.5-14B、Qwen2.5-32B](https://www.doubao.com/thread/w47113795db06b522)
+
+14. [为什么qwen2.5:32b的延迟低于其他两个](https://www.doubao.com/thread/w641ec9bbdbb298ae)
+
+
+15. [向量模型 Qwen3-Embedding + 重排模型 BGE-Large Reranker](https://www.doubao.com/thread/wee482c692bdb4a3e)
+
+16.[重排模型qwen3-reranker-0.6b:q8_0](https://www.doubao.com/thread/w6a9050e065ad713e)
+
+
+
+
+
+## FunASRServer基础与安装
+
+[FunASRServer（0.1.12 2pass 离线版）支持的方言清单](https://www.doubao.com/thread/wdc57148406a62137)
+```
+一、强支持（识别极准、原生优化、陕西话首选）
+西北官话（你西安本地）
+陕西关中话（西安方言）
+甘肃兰州话、山西太原话、宁夏方言
+西南官话
+四川话、重庆话、云南话、贵州话
+东北官话
+东北三省方言、赤峰口音
+华北官话
+河南话、山东话、天津话、北京口音
+
+二、良好支持
+上海话、江浙吴语
+湖南话、湖北话
+粤语（两广白话，够用不如 SenseVoice 极致）
+三、通用口音普通话
+全国各类带口音普通话全部兼容
+四、不支持小众方言
+闽南语、潮汕话、客家话、温州话、少数民族语言
+一句话适配你的场景
+✅ 陕西西安本地话 → FunASRServer 全网本地 ASR 最强
+✅ 四川 / 东北 / 河南 / 山东 → 碾压所有本地 ONNX 模型
+❌ 极致粤语 → 换 Sherpa SenseVoice
+```
+
+[FunASRServer在docker中启动时关闭SSL](https://www.doubao.com/thread/w1acc805fe801e68c)
+
+[error Handshake ended with HTTP error: 426 + 10095d端口占用等启动问题](https://www.doubao.com/thread/w450e20f3ce1b2fd0)
+```
+HTTP 426 = Upgrade Required / 需要升级协议
+原因：你的客户端用 HTTP 连接，但服务端还在使用 WebSocket 标准
+
+启动时强制使用纯 WebSocket 无验证模式
+
+第一步：杀死旧进程（必须执行）
+pkill -f funasr
+pkill -f run_server_2pass
+pkill -f "funasr-wss-server"
+
+
+第二步：创建空热词文件（解决报错）
+touch /workspace/models/hotwords.txt
+
+
+nohup bash run_server_2pass.sh \
+--download-model-dir /workspace/models \
+--vad-dir damo/speech_fsmn_vad_zh-cn-16k-common-onnx \
+--model-dir iic/SenseVoiceSmall-onnx \
+--online-model-dir damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online-onnx \
+--punc-dir damo/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727-onnx \
+--lm-dir damo/speech_ngram_lm_zh-cn-ai-wesp-fst \
+--itn-dir thuduj12/fst_itn_zh \
+--hotword /workspace/models/hotwords.txt \
+--certfile "" \
+--keyfile "" \
+> log.txt 2>&1 &
+```
+
+
+
+
 
 
 

@@ -366,19 +366,36 @@ ASR:
     # 第一句：mkdir -p ./funasr-runtime-resources/models
     # 第二句：sudo docker run -p 10096:10095 -it --privileged=true -v $PWD/funasr-runtime-resources/models:/workspace/models registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-online-cpu-0.1.12
     # 上一句话执行后会进入到容器，继续第三句：cd FunASR/runtime
-    # 不要退出容器，继续在容器中执行第四句：nohup bash run_server_2pass.sh --download-model-dir /workspace/models --vad-dir damo/speech_fsmn_vad_zh-cn-16k-common-onnx --model-dir iic/SenseVoiceSmall-onnx  --online-model-dir damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online-onnx  --punc-dir damo/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727-onnx --lm-dir damo/speech_ngram_lm_zh-cn-ai-wesp-fst --itn-dir thuduj12/fst_itn_zh --hotword /workspace/models/hotwords.txt > log.txt 2>&1 &
+    # 不要退出容器，继续在容器中执行第四句：
+    # 默认开启SSL版本的：
+    # nohup bash run_server_2pass.sh --download-model-dir /workspace/models --vad-dir damo/speech_fsmn_vad_zh-cn-16k-common-onnx --model-dir iic/SenseVoiceSmall-onnx  --online-model-dir damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online-onnx  --punc-dir damo/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727-onnx --lm-dir damo/speech_ngram_lm_zh-cn-ai-wesp-fst --itn-dir thuduj12/fst_itn_zh --hotword /workspace/models/hotwords.txt > log.txt 2>&1 &
+    # 关闭SSL版本的：
+    # nohup bash run_server_2pass.sh --download-model-dir /workspace/models --vad-dir damo/speech_fsmn_vad_zh-cn-16k-common-onnx --model-dir iic/SenseVoiceSmall-onnx --online-model-dir damo/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online-onnx --punc-dir damo/punc_ct-transformer_zh-cn-common-vad_realtime-vocab272727-onnx --lm-dir damo/speech_ngram_lm_zh-cn-ai-wesp-fst --itn-dir thuduj12/fst_itn_zh --hotword /workspace/models/hotwords.txt --certfile "" --keyfile "" > log.txt 2>&1 &
+
     # 上一句话执行后会进入到容器，继续第五句：tail -f log.txt
     # 第五句话执行完后，会看到模型下载日志，下载完后就可以连接使用了
     # 以上是使用CPU推理，如果有GPU，详细参考：https://github.com/modelscope/FunASR/blob/main/runtime/docs/SDK_advanced_guide_online_zh.md
     type: fun_server
+    # 注意：服务器的地址配置host.docker.internal时错误的，应为这个地址只能用在dokcer里面的容器，不能用在下面使用。只能使用127.0.0.1
     host: 127.0.0.1
     port: 10096
-    is_ssl: true
+    is_ssl: false
+    api_key: XXXXX
+    access_token: XXXXX
+    output_dir: tmp/
+  Qwen3-ASR-06B:
+    type: Qwen3_ASR_06B
+    host: 127.0.0.1
+    port: 10091
+    is_ssl: false
     api_key: XXXXX
     access_token: XXXXX
     output_dir: tmp/
   SherpaASR:
     # Sherpa-ONNX 本地语音识别（需手动下载模型）
+    # 语言：普通话、粤语、英语、日语、韩语
+    # 格式：ONNX 离线纯本地，CPU 秒跑、ESP32 适配
+    # 版本：2024-07-17 官方稳定版，带 int8 量化版
     type: sherpa_onnx_local
     model_dir: models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17
     output_dir: tmp/
@@ -392,6 +409,8 @@ ASR:
     model_dir: models/sherpa-onnx-paraformer-zh-small-2024-03-09
     output_dir: tmp/
     model_type: paraformer
+
+
   DoubaoASR:
     # 可以在这里申请相关Key等信息
     # https://console.volcengine.com/speech/app
@@ -580,7 +599,8 @@ ASR:
     # 热词定制文档地址：https://help.aliyun.com/zh/model-studio/custom-hot-words?
     # vocabulary_id: vocab-xxx-24ee19fa8cfb4d52902170a0xxxxxxxx  # 热词ID(可选)
     # language_hints: ["zh", "en"]  # 指定语言(可选)，支持zh、en、ja、yue、ko、de、fr、ru
-    output_dir: tmp/  
+    output_dir: tmp/
+
 VAD:
   SileroVAD:
     type: silero
