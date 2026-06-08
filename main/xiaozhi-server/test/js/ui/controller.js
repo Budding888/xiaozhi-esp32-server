@@ -12,7 +12,7 @@ class UIController {
         this.visualizerContext = null;
         this.audioStatsTimer = null;
         this.currentBackgroundIndex = localStorage.getItem('backgroundIndex') ? parseInt(localStorage.getItem('backgroundIndex')) : 0;
-        this.backgroundImages = ['1.png', '2.png', '3.png'];
+        this.backgroundImages = ['3.png'];
         this.dialBtnDisabled = false;
 
         // Bind methods

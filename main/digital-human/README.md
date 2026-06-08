@@ -8,6 +8,38 @@
 
 digital-human 是独立的数字人测试模块，负责提供本地测试页面、前端交互资源、唤醒词运行时和事件桥能力，用于联调整个数字人交互链路。
 
+
+
+
+# 项目启动环境及依赖的安装
+======================================================================================
+## 1.创建conda虚拟环境
+conda create -n xiaozhi-digital-human python=3.10
+
+
+## 2.激活conda虚拟环境
+conda activate xiaozhi-digital-human
+
+## 3.验证激活是否成功（命令行前缀会显示环境名）
+# 输出示例：(xiaozhi-digital-human) C:\Users\XXX>
+python --version  # 应输出 Python 3.10.x
+
+## 4.安装以来之前，先升级 pip（避免安装报错）
+python -m pip install --upgrade pip
+
+-----------------------------------------------------------------
+## 4. 退出虚拟环境
+conda deactivate
+
+## 5. 删除虚拟环境（若需重建）
+conda remove -n xiaozhi-digital-human --all
+
+## 6. 查看所有 Conda 环境
+conda info --envs
+
+-----------------------------------------------------------------
+
+
 # 快速启动
 
 安装依赖：

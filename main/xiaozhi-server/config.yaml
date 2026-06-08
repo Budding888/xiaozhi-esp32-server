@@ -124,7 +124,7 @@ wakeup_words:
   - "小冰小冰"
 # MCP接入点地址，地址格式为：ws://你的mcp接入点ip或者域名:端口号/mcp/?token=你的token
 # 详细教程 https://github.com/xinnan-tech/xiaozhi-esp32-server/blob/main/docs/mcp-endpoint-integration.md
-mcp_endpoint: 你的接入点 websocket地址
+mcp_endpoint: ws://192.168.0.115:8004/mcp_endpoint/mcp/?token=qCVHvDsBB96ZxEV6LJNl//M7fN4yPQpOyOgH2gbL6o8%3D
 
 # 上下文源配置
 # 用于在系统提示词中注入动态数据，如健康数据、股票信息等
@@ -175,15 +175,53 @@ plugins:
       - ".wav"
       - ".p3"
     refresh_time: 300 # 刷新音乐列表的时间间隔，单位为秒
+  get_music_songs_list:
+    description: "当用户问'有什么歌'、'有哪些歌'、'你会唱什么'、'歌曲列表'、'音乐列表'时，调用本方法，使用知识库中的信息回答问题"
+    music_dir: "./music"  # 音乐文件存放路径，将从该目录及子目录下搜索音乐文件
+    music_ext: # 音乐文件类型，p3格式效率最高
+      - ".mp3"
+      - ".wav"
+      - ".p3"
   search_from_ragflow:
     # 知识库的描述信息，方便大语言模型知道什么时候调用
     description: "当用户问xxx时，调用本方法，使用知识库中的信息回答问题"
     # ragflow接口配置
-    base_url: "http://192.168.0.8"
+    base_url: "http://127.0.0.1:8008"
     # ragflow api访问令牌
     api_key: "ragflow-xxx"
     # ragflow知识库id
     dataset_ids: ["123456789"]
+  submit_weight_data:
+    description: "当用户说 '我要上报体重数据，今天的体重是XX公斤'、'今天的体重是XX公斤，请上报体重数据'、'体重是XX公斤，请上报'、'我要上报体重，体重是XX公斤'，调用本方法，将患者数据上报到RPM系统"
+    # RPM患者体重体征数据上报接口配置
+    api_url: "http://127.0.0.1:8008"
+    api_key: "rpm-xxx"
+  submit_blood_glucose_data:
+    description: "当用户说 '我要上报血糖数据，今天的血糖是xxxx mmol/L'、'今天的血糖是xxxx mmol/L，请上报血糖数据'、'今天的血糖是xxxx毫摩尔/升，请上报'、'我要上报血糖，血糖是xxxx毫摩尔/升，调用本方法，将患者数据上报到RPM系统"
+    # RPM患者血糖体征数据上报接口配置
+    api_url: "http://127.0.0.1:8008"
+    api_key: "rpm-xxx"
+  submit_blood_pressure_data:
+    description: "当用户说 '我要上报血压数据，今天的高压是150、低压是120'、'今天的高压是150、低压是120，请上报血压数据'、'今天的收缩压是150、舒张压是120，请上报'、'我要上报血压，血压是150、120'、'我要上报血压，血压是150/120'、'我要上报血压，血压是150和120'、'高压150，低压120，请上报'、'收缩压150，舒张压120，请上报'，调用本方法，将患者数据上报到RPM系统"
+    # RPM患者血糖体征数据上报接口配置
+    api_url: "http://127.0.0.1:8008"
+    api_key: "rpm-xxx"
+  submit_urine_volume_data:
+    description: "当用户说 '我要上报尿量数据，今天的尿量是xxxx毫升(ml)'、'我的尿量是xxxx，请上报尿量'、'尿量xxxx毫升(ml)，请上报'、'我要上报尿量，尿量是xxxx毫升(ml)'，调用本方法，将患者数据上报到RPM系统"
+    # RPM患者血糖体征数据上报接口配置
+    api_url: "http://127.0.0.1:8008"
+    api_key: "rpm-xxx"
+  submit_heart_rate_data:
+    description: "当用户说 '我要上报心率数据，今天的心率是xxxx次/分钟(bpm)'、'我的心率是xxxx，请上报心率'、'心率xxxx次/分钟(bpm)，请上报'、'我要上报心率，心率是xxxx次/分钟(bpm)'，调用本方法，将患者数据上报到RPM系统"
+    # RPM患者血糖体征数据上报接口配置
+    api_url: "http://127.0.0.1:8008"
+    api_key: "rpm-xxx"
+  update_medication_reminder_status:
+    description: "当用户说'早上我吃了卡维地洛片, 请上报'、'中午已经服用了XXX药, 请上报'、'下午还没吃药, 请上报'、'早上的药已经吃了'等与用药状态更新相关的指令时调用此功能，更新RPM系统数据"
+    # RPM患者血糖体征数据上报接口配置
+    api_url: "http://127.0.0.1:8008"
+    api_key: "rpm-xxx"
+
 # 声纹识别配置
 voiceprint:
   # 声纹接口地址
@@ -270,6 +308,14 @@ Intent:
       - get_weather
       - get_news_from_newsnow
       - play_music
+      - get_music_songs_list
+      - get_music_songs_list
+      - submit_weight_data
+      - submit_blood_glucose_data
+      - submit_blood_pressure_data
+      - submit_urine_volume_data
+      - submit_heart_rate_data
+      - update_medication_reminder_status
   function_call:
     # 不需要动type
     type: function_call
@@ -285,9 +331,16 @@ Intent:
       # play_music是服务器自带的音乐播放，hass_play_music是通过home assistant控制的独立外部程序音乐播放
       # 如果用了hass_play_music，就不要开启play_music，两者只留一个
       - play_music
+      - get_music_songs_list
       #- hass_get_state
       #- hass_set_state
       #- hass_play_music
+      - submit_weight_data
+      - submit_blood_glucose_data
+      - submit_blood_pressure_data
+      - submit_urine_volume_data
+      - submit_heart_rate_data
+      - update_medication_reminder_status
 
 Memory:
   mem0ai:
@@ -1140,6 +1193,11 @@ TTS:
     volume: 1.0  # 音量，1.0 表示正常音量，>1 表示增大，<1 表示减小
     save_path:   # 保存路径
     # language: "中文"  # 指定输出语种,如:中文、英语、日语、韩语等,请根据所选音色支持的语言进行设置,不填则默认为中文
+  MossNanoTTS:
+    type: moss_nano_stream
+    protocol: websocket # protocol choices = ['websocket', 'http']
+    url: ws://127.0.0.1:8119/v1/tts/streaming  # TTS 服务的 URL 地址，指向本地服务器 [websocket默认ws://127.0.0.1:8092/paddlespeech/tts/streaming，http默认http://127.0.0.1:8090/paddlespeech/tts]
+    spk_id: 'zh_putong_man'  # 发音人 ID，0 通常表示默认的发音人
   IndexStreamTTS:
     # 基于Index-TTS-vLLM项目的TTS接口服务
     # 参照教程：https://github.com/Ksuriuri/index-tts-vllm/blob/master/README.md

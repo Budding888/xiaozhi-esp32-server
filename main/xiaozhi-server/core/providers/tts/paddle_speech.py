@@ -23,7 +23,8 @@ class TTSProvider(TTSProviderBase):
 
     def __init__(self, config, delete_audio_file):
         super().__init__(config, delete_audio_file)
-        self.url = config.get("url", "ws://192.168.1.10:8092/paddlespeech/tts/streaming")
+        print(f"---------paddlespeech------config----------：{config}")
+        self.url = config.get("url", "ws://127.0.0.1:8092/paddlespeech/tts/streaming")
         self.protocol = config.get("protocol", "websocket")
         
         if config.get("private_voice"):

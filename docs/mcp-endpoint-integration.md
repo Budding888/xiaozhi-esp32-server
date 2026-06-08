@@ -46,7 +46,9 @@
 cd mcp-calculator
 
 conda remove -n mcp-calculator --all -y
+
 conda create -n mcp-calculator python=3.10 -y
+
 conda activate mcp-calculator
 
 pip install -r requirements.txt
@@ -58,13 +60,13 @@ pip install -r requirements.txt
 
 例如我的智能体的mcp地址是
 ```
-ws://192.168.1.25:8004/mcp_endpoint/mcp/?token=abc
+ws://192.168.0.115:8004/mcp_endpoint/mcp/?token=qCVHvDsBB96ZxEV6LJNl//M7fN4yPQpOyOgH2gbL6o8%3D
 ```
 
 开始输入命令
 
 ```bash
-export MCP_ENDPOINT=ws://192.168.1.25:8004/mcp_endpoint/mcp/?token=abc
+export MCP_ENDPOINT=ws://192.168.0.115:8004/mcp_endpoint/mcp/?token=qCVHvDsBB96ZxEV6LJNl//M7fN4yPQpOyOgH2gbL6o8%3D
 ```
 
 输入完后，启动程序

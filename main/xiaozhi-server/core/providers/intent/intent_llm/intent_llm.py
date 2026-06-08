@@ -127,14 +127,13 @@ class IntentProvider(IntentProviderBase):
                 user_prompt="请根据以上内容，像人类一样说话的口吻回复用户，要求简洁，请直接返回结果。用户现在说："
                 + original_text,
             )
+            print(f"replyResult-----------LLM Result: {llm_result}")
             return llm_result
         except Exception as e:
             logger.bind(tag=TAG).error(f"Error in generating reply result: {e}")
             return get_system_error_response(self.config)
 
-    async def detect_intent(
-        self, conn: "ConnectionHandler", dialogue_history: List[Dict], text: str
-    ) -> str:
+    async def detect_intent(self, conn: "ConnectionHandler", dialogue_history: List[Dict], text: str) -> str:
         if not self.llm:
             raise ValueError("LLM provider not set")
         if conn.func_handler is None:

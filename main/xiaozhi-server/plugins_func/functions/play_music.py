@@ -6,6 +6,7 @@ import difflib
 import traceback
 from pathlib import Path
 from core.handle.sendAudioHandle import send_stt_message
+from config.logger import setup_logging
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
 from core.utils.dialogue import Message
 from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType, ContentType
@@ -16,19 +17,26 @@ if TYPE_CHECKING:
 
 TAG = __name__
 
+logger = setup_logging()
+
 MUSIC_CACHE = {}
 
 play_music_function_desc = {
     "type": "function",
     "function": {
         "name": "play_music",
-        "description": "唱歌、听歌、播放音乐的方法。",
+        "description": (
+            "唱歌、听歌、播放音乐的方法。"
+            "当用户说'播放音乐'且没有指定歌名时，song_name参数传'random'，随机播放音乐。"
+            "当用户说'播放三只老虎'等明确歌名时，song_name参数传歌名。"
+            "如果指定名称的音乐在本地找不到，会提示用户并随机播放一首。"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "song_name": {
                     "type": "string",
-                    "description": "歌曲名称，如果用户没有指定具体歌名则为'random', 明确指定的时返回音乐的名字 示例: ```用户:播放两只老虎\n参数：两只老虎``` ```用户:播放音乐 \n参数：random ```",
+                    "description": "歌曲名称，如果用户没有指定具体歌名则为'random', 明确指定时传歌曲名称。示例: ```用户:播放两只老虎\n参数：两只老虎``` ```用户:播放音乐 \n参数：random ```",
                 }
             },
             "required": ["song_name"],
@@ -53,6 +61,7 @@ def play_music(conn: "ConnectionHandler", song_name: str):
 
         # 提交异步任务
         task = conn.loop.create_task(
+            # 处理音乐播放逻辑
             handle_music_command(conn, music_intent)  # 封装异步逻辑
         )
 
@@ -146,6 +155,7 @@ def initialize_music_handler(conn: "ConnectionHandler"):
     return MUSIC_CACHE
 
 
+# 音乐播放逻辑
 async def handle_music_command(conn: "ConnectionHandler", text):
     initialize_music_handler(conn)
     global MUSIC_CACHE
@@ -154,23 +164,40 @@ async def handle_music_command(conn: "ConnectionHandler", text):
     clean_text = re.sub(r"[^\w\s]", "", text).strip()
     conn.logger.bind(tag=TAG).debug(f"检查是否是音乐命令: {clean_text}")
 
-    # 尝试匹配具体歌名
-    if os.path.exists(MUSIC_CACHE["music_dir"]):
-        if time.time() - MUSIC_CACHE["scan_time"] > MUSIC_CACHE["refresh_time"]:
-            # 刷新音乐文件列表
-            MUSIC_CACHE["music_files"], MUSIC_CACHE["music_file_names"] = (
-                get_music_files(MUSIC_CACHE["music_dir"], MUSIC_CACHE["music_ext"])
-            )
-            MUSIC_CACHE["scan_time"] = time.time()
+    if not os.path.exists(MUSIC_CACHE["music_dir"]):
+        conn.logger.bind(tag=TAG).error(f"音乐目录不存在: {MUSIC_CACHE['music_dir']}")
+        return False
 
-        potential_song = _extract_song_name(clean_text)
-        if potential_song:
-            best_match = _find_best_match(potential_song, MUSIC_CACHE["music_files"])
-            if best_match:
-                conn.logger.bind(tag=TAG).info(f"找到最匹配的歌曲: {best_match}")
-                await play_local_music(conn, specific_file=best_match)
-                return True
-    # 检查是否是通用播放音乐命令
+    # 刷新音乐文件列表
+    if time.time() - MUSIC_CACHE["scan_time"] > MUSIC_CACHE["refresh_time"]:
+        MUSIC_CACHE["music_files"], MUSIC_CACHE["music_file_names"] = (
+            get_music_files(MUSIC_CACHE["music_dir"], MUSIC_CACHE["music_ext"])
+        )
+        MUSIC_CACHE["scan_time"] = time.time()
+
+    # 尝试匹配具体歌名
+    potential_song = _extract_song_name(clean_text)
+    if potential_song:
+        best_match = _find_best_match(potential_song, MUSIC_CACHE["music_files"])
+        if best_match:
+            conn.logger.bind(tag=TAG).info(f"找到最匹配的歌曲: {best_match}")
+            await play_local_music(conn, specific_file=best_match)
+            return True
+
+        # 指定歌名未找到 → 先播报提示语，再随机播放
+        conn.logger.bind(tag=TAG).info(
+            f"未找到歌曲 '{potential_song.strip()}'，将随机播放"
+        )
+        conn.tts.tts_text_queue.put(
+            TTSMessageDTO(
+                sentence_id=conn.sentence_id,
+                sentence_type=SentenceType.MIDDLE,
+                content_type=ContentType.TEXT,
+                content_detail="您点播的音乐本地音乐库没有，将为您随机播放一首",
+            )
+        )
+
+    # 随机播放
     await play_local_music(conn)
     return True
 

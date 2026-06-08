@@ -16,8 +16,9 @@ from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType
 
 TAG = __name__
 
-
+# ======================处理用户意图=======================================
 async def handle_user_intent(conn: "ConnectionHandler", text):
+    print("----------处理用户意图----方法输入text------", text)
     # 预处理输入文本，处理可能的JSON格式
     try:
         if text.strip().startswith("{") and text.strip().endswith("}"):
@@ -44,12 +45,16 @@ async def handle_user_intent(conn: "ConnectionHandler", text):
     if conn.intent_type == "function_call":
         # 使用支持function calling的聊天方法,不再进行意图分析
         return False
+
     # 使用LLM进行意图分析
     intent_result = await analyze_intent_with_llm(conn, text)
+    print("----------意图分析结果----intent_result------", intent_result)
     if not intent_result:
         return False
+
     # 会话开始时生成sentence_id
     conn.sentence_id = str(uuid.uuid4().hex)
+
     # 处理各种意图
     return await process_intent_result(conn, intent_result, text)
 
@@ -68,6 +73,8 @@ async def check_direct_exit(conn: "ConnectionHandler", text):
     return False
 
 
+
+# ==================使用LLM分析用户意图========================
 async def analyze_intent_with_llm(conn: "ConnectionHandler", text):
     """使用LLM分析用户意图"""
     if not hasattr(conn, "intent") or not conn.intent:
@@ -77,7 +84,9 @@ async def analyze_intent_with_llm(conn: "ConnectionHandler", text):
     # 对话历史记录
     dialogue = conn.dialogue
     try:
+        # 检测用户最后一句话的意图
         intent_result = await conn.intent.detect_intent(conn, dialogue.dialogue, text)
+        print("----------用户最后一句话的意图识别结果----------:", intent_result)
         return intent_result
     except Exception as e:
         conn.logger.bind(tag=TAG).error(f"意图识别失败: {str(e)}")
@@ -85,21 +94,21 @@ async def analyze_intent_with_llm(conn: "ConnectionHandler", text):
     return None
 
 
-async def process_intent_result(
-    conn: "ConnectionHandler", intent_result, original_text
-):
+async def process_intent_result(conn: "ConnectionHandler", intent_result, original_text):
     """处理意图识别结果"""
     try:
         # 尝试将结果解析为JSON
         intent_data = json.loads(intent_result)
+        print("----------process_intent_result----------将意图分析结果解析为JSON----------:", intent_data)
 
         # 检查是否有function_call
         if "function_call" in intent_data:
             # 直接从意图识别获取了function_call
-            conn.logger.bind(tag=TAG).debug(
-                f"检测到function_call格式的意图结果: {intent_data['function_call']['name']}"
-            )
+            conn.logger.bind(tag=TAG).debug(f"检测到function_call格式的意图结果: {intent_data['function_call']['name']}")
+
             function_name = intent_data["function_call"]["name"]
+            print("----------process_intent_result----------function_name----------:", function_name)
+
             if function_name == "continue_chat":
                 return False
 
@@ -107,6 +116,7 @@ async def process_intent_result(
                 await send_stt_message(conn, original_text)
                 conn.client_abort = False
 
+                # 处理上下文结果
                 def process_context_result():
                     conn.dialogue.put(Message(role="user", content=original_text))
 
@@ -123,7 +133,10 @@ async def process_intent_result(
 
                                         请根据以上信息回答用户的问题：{original_text}"""
 
+                    # 根据用户输入文本。获取意图识别引擎的响应结果
                     response = conn.intent.replyResult(context_prompt, original_text)
+
+                    # 文本转语音
                     speak_txt(conn, response)
 
                 conn.executor.submit(process_context_result)

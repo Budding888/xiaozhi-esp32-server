@@ -861,6 +861,7 @@ export default {
   'modelConfig.tts': 'Text-to-Speech',
   'modelConfig.memory': 'Memory',
   'modelConfig.rag': 'RAG',
+  'modelConfig.plugin': 'Plugin',
   'modelConfig.modelId': 'Model ID',
   'modelConfig.modelName': 'Model Name',
   'modelConfig.provider': 'Interface Type',
