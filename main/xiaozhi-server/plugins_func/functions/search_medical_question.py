@@ -1,0 +1,747 @@
+"""
+医疗问答插件
+
+由通用LLM的function_call触发，编排完整医疗问答流程：
+RAGFlow知识库检索 → 医疗Qwen推理 → 内容安全校验 → 返回给通用LLM润色
+
+依赖：
+- RAGFlow知识库：通过 search_from_ragflow 插件查询（Docker运行）
+- 医疗Qwen LLM：外部项目 AutoTokenizer.from_pretrained 部署的 Qwen3.5-4B-Medical
+- 通用LLM：通过项目现有的 function_call 意图识别触发本插件
+"""
+
+from plugins_func.register import register_function, ToolType, ActionResponse, Action
+from plugins_func.functions.search_from_ragflow import search_from_ragflow
+from plugins_func.functions.search_from_ragflow import search_from_ragflow_v2
+from plugins_func.functions.search_from_ragflow import search_from_ragflow_chat
+from config.logger import setup_logging
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.connection import ConnectionHandler
+
+TAG = __name__
+logger = setup_logging()
+
+# ============================================================
+# 工具描述 — 通用LLM根据此描述判断何时调用 search_medical_question
+# ============================================================
+MEDICAL_QA_FUNCTION_DESC = {
+    "type": "function",
+    "function": {
+        "name": "search_medical_question",
+        "description": "腹透患者医疗问答：当患者询问任何腹透相关医疗健康问题时必须调用此工具。"
+                       "涵盖范围包括但不限于："
+                       "①饮食营养（吃什么、忌口、食谱、饮水量、蛋白质、钾磷钠）"
+                       "②腹透护理（透析操作、管路护理、出口感染、并发症、腹膜炎）"
+                       "③体征异常（血压高/低、血糖高/低、体重变化、尿量少、水肿）"
+                       "④用药与禁忌（药物相互作用、腹透相关用药注意事项）"
+                       "⑤任何与腹透、肾病、透析相关的症状和问题"
+                       "重要：只要患者问到腹透、肾病、透析相关的问题，即使你觉得自己知道答案，也必须调用此工具。"
+                       "非医疗问题（天气、新闻、音乐、闲聊等）不需要调用此工具",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "患者提出的医疗相关问题原文，完整保留以便获取准确知识库结果"
+                }
+            },
+            "required": ["question"]
+        }
+    }
+}
+
+# 医疗Qwen的system prompt（与外部医疗Qwen服务中的约束一致）
+MEDICAL_SYSTEM_PROMPT = """你是一名专业的医疗健康助手。
+约束条件：
+1. 直接回答用户的具体问题，围绕问题核心给出准确信息，不要偏离主题；
+2. 回答要简洁、准确、直接、控制在600字以内、注意断句与标点符号、输出结果完整；
+3. 用户均是腹膜透析患者；
+4. 直接输出最终答案，不要输出推理过程、思考步骤或规划；
+5. 同一个问题中，可能存在多个小问题，需要拆分之后再逐个回答；
+6. 对于回答中的反问，需要继续回答，不能没有答案；
+7. 【知识库优先】知识库检索到的内容与问题直接相关时，以知识库为准；
+8. 【自主判断】知识库未覆盖用户问题或回答信息不完整时，用你自身医学知识补充并完善；
+9. 【忽略噪音】如果知识库检索到的内容与问题无关，忽略它，用自身知识回答；
+10. 使用专业但易懂的中文；
+"""
+
+
+
+# Query改写prompt — 将口语化问题转为知识库检索友好的关键词形式
+# 注意：改写结果将被用于RAGFlow向量检索，目标是提升检索命中率，
+# 而不是生成回答。改写结果应为关键词组合，而非完整回答。
+QUERY_OPTIMIZE_PROMPT = """你是一名医疗查询改写专家。你的任务是将患者的口语化问题改写成知识库检索用的关键词组合。
+要求：
+1. 提取核心医学概念和关键词（如"腹透"→"腹膜透析 腹透"）
+2. 补充同义词和相关术语
+3. 多概念用空格分隔
+4. 只输出改写后的关键词文本，不要解释，不要多余内容
+5. 不要输出思考过程
+6. 控制在100字以内
+
+示例：
+患者问题：腹透患者感冒了应该吃什么药？
+优化后的查询：腹膜透析 感冒 用药 注意事项 药物相互作用
+
+患者问题：腹膜透析出口感染怎么处理？
+优化后的查询：腹膜透析 出口感染 护理 消毒 处理
+
+患者问题：透析患者血压高饮食要注意什么？
+优化后的查询：腹膜透析 高血压 饮食 钾 钠 控制 饮水
+
+患者问题：{question}
+优化后的查询："""
+
+# 禁忌词替换规则（按类别分组，更具体的短语放前面）
+# 当医疗回答包含以下危险表述时，自动替换为安全措辞
+MEDICAL_REPLACEMENTS = {
+    # ===== 饮水控制 =====
+    "不用控制饮水": "遵医嘱控制饮水量",
+    "不需要限制饮水": "遵医嘱控制饮水量",
+    "不必限制饮水": "遵医嘱控制饮水量",
+    "不用限水": "遵医嘱控制饮水量",
+    "不限水": "遵医嘱控制饮水量",
+    "随意饮水": "遵医嘱控制饮水量",
+    "随意喝水": "遵医嘱控制饮水量",
+    "大量饮水": "遵医嘱控制饮水量",
+    "多喝点水": "遵医嘱适量饮水",
+    "多喝水": "遵医嘱适量饮水",
+    "多饮水": "遵医嘱适量饮水",
+    "多喝汤": "遵医嘱控制液体摄入，汤也计入饮水量",
+    "多喝粥": "遵医嘱控制液体摄入，粥也计入饮水量",
+    "多喝牛奶": "遵医嘱控制液体及磷摄入",
+    # ===== 饮食控制 =====
+    "不用忌口": "遵医嘱控制饮食",
+    "不需要忌口": "遵医嘱控制饮食",
+    "不用控制饮食": "遵医嘱控制饮食",
+    "随便吃": "遵医嘱控制饮食",
+    "随意吃": "遵医嘱控制饮食",
+    "不用限盐": "遵医嘱控制盐摄入",
+    "不限盐": "遵医嘱控制盐摄入",
+    "不用限钾": "遵医嘱控制钾摄入",
+    "不限钾": "遵医嘱控制钾摄入",
+    "不用限磷": "遵医嘱控制磷摄入",
+    "不限磷": "遵医嘱控制磷摄入",
+    "多吃香蕉": "香蕉含钾高，建议遵医嘱控制高钾食物摄入",
+    "多吃橙子": "橙子含钾高，建议遵医嘱控制高钾食物摄入",
+    "多吃橘子": "橘子含钾高，建议遵医嘱控制高钾食物摄入",
+    "多吃土豆": "土豆含钾高，建议遵医嘱控制高钾食物摄入",
+    "多吃紫菜": "紫菜含钾高，建议遵医嘱控制高钾食物摄入",
+    "多吃坚果": "坚果含钾磷高，建议遵医嘱控制摄入",
+    "多吃动物内脏": "动物内脏含磷高，建议遵医嘱控制摄入",
+    # ===== 药物管理 =====
+    "自行停药": "遵医嘱用药，不可自行停药",
+    "自己停药": "遵医嘱用药，不可自行停药",
+    "随便停药": "遵医嘱用药，不可自行停药",
+    "随意停药": "遵医嘱用药，不可自行停药",
+    "不用吃药": "遵医嘱按时服药",
+    "不用服药": "遵医嘱按时服药",
+    "加大药量": "遵医嘱调整剂量",
+    "增加药量": "遵医嘱调整剂量",
+    "减少药量": "遵医嘱调整剂量",
+    "减小药量": "遵医嘱调整剂量",
+    "不用吃降压药": "降压药需遵医嘱服用，不可自行停用",
+    "不用吃降糖药": "降糖药需遵医嘱服用，不可自行停用",
+    "不用吃抗生素": "抗生素需遵医嘱使用，不可自行停用",
+    "不用吃消炎药": "消炎药需遵医嘱使用",
+    # ===== 透析治疗 =====
+    "停止透析": "遵医嘱坚持透析治疗",
+    "不用透析": "遵医嘱坚持透析治疗",
+    "不做透析": "遵医嘱坚持透析治疗",
+    "不做腹透": "遵医嘱坚持腹透治疗",
+    "减少透析": "遵医嘱规律透析，不可自行减少",
+    "减少透析次数": "遵医嘱规律透析，不可自行减少",
+    "减少腹透": "遵医嘱规律腹透，不可自行减少",
+    "减少腹透次": "遵医嘱规律腹透，不可自行减少",
+    "不用换液": "遵医嘱按时更换腹透液",
+    "减少换液": "遵医嘱按时换液，不可自行减少",
+    "减少换液次": "遵医嘱按时换液，不可自行减少",
+    "腹透液不用换": "遵医嘱按时更换腹透液",
+    "不用测超滤": "超滤量是重要监测指标，建议遵医嘱记录",
+    "不用记超滤": "超滤量是重要监测指标，建议遵医嘱记录",
+    # ===== 监测与复查 =====
+    "不用测体重": "体重是干体重评估的重要指标，建议遵医嘱每日测量",
+    "体重不用测": "体重是干体重评估的重要指标，建议遵医嘱每日测量",
+    "不用测血压": "血压是重要监测指标，建议遵医嘱规律测量",
+    "血压不用测": "血压是重要监测指标，建议遵医嘱规律测量",
+    "不用测血糖": "血糖是重要监测指标，建议遵医嘱规律测量",
+    "不用复查": "建议遵医嘱定期复查",
+    "不用检查": "建议遵医嘱定期检查",
+    "不用去医院": "建议及时就医",
+    "不用就医": "建议及时就医",
+    "不用看医生": "建议及时咨询医生",
+    # ===== 感染与出口护理 =====
+    "不用处理": "建议及时就医处理",
+    "自己处理": "建议在医生指导下处理",
+    "出口感染没关系": "出口感染需及时就医处理",
+    "腹膜炎没关系": "腹膜炎需立即就医处理",
+    # ===== 活动与休息 =====
+    "剧烈运动": "避免剧烈运动，建议在医生指导下适当活动",
+    "不用休息": "注意休息，避免劳累",
+    "可以熬夜": "建议规律作息，避免熬夜",
+    # ===== 危险症状轻视 =====
+    "不用在意": "建议及时咨询医生",
+    "不用管它": "建议及时咨询医生",
+    "不用太担心": "如有不适建议及时就医",
+    "不用担心": "如有不适建议及时就医",
+}
+
+
+def _send_progress_tts(conn, text: str):
+    """向TTS队列发送进度提示文本，让用户实时了解处理进度"""
+    try:
+        from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType, ContentType
+        conn.tts.tts_text_queue.put(
+            TTSMessageDTO(
+                sentence_id=conn.sentence_id,
+                sentence_type=SentenceType.MIDDLE,
+                content_type=ContentType.TEXT,
+                content_detail=text,
+            )
+        )
+    except Exception:
+        pass
+
+
+@register_function("search_medical_question", MEDICAL_QA_FUNCTION_DESC, ToolType.SYSTEM_CTL)
+def search_medical_question(conn: "ConnectionHandler", question=None):
+    """
+    医疗问答入口 — 被通用LLM的function_call触发
+
+    流程:
+        0. 健康检查（决定走正常流水线还是降级路径）
+        1. 正常：Query改写 → RAGFlow检索 → MedicalQwen推理 → 校验 → 通用LLM润色
+        2. 降级：RAGFlow检索 → 通用LLM回答（基于知识库或自身知识）
+
+    Args:
+        conn: 连接处理器，包含当前对话的配置和状态
+        question: 患者提出的医疗问题原文
+
+    Returns:
+        ActionResponse: 正常返回REQLLM，降级返回RESPONSE
+    """
+    if not question:
+        return ActionResponse(Action.RESPONSE, None, "请告诉我您的医疗问题")
+
+    logger.bind(tag=TAG).info(f"===========触发腹透患者医疗问答(search_medical_question)===========，问题: {question}")
+
+    # ===== 阶段0：健康检查 =====
+    # 快速检测 MedicalQwen 是否存活，决定是否走完整流水线
+    medical_config = _get_medical_config()
+    logger.bind(tag=TAG).info(f"===========MedicalQwen配置参数medical_config===========: {medical_config}")
+    if medical_config:
+        from core.providers.llm.medical_qwen.medical_qwen import LLMProvider
+        qwen_healthy = LLMProvider.health_check(medical_config)
+        logger.bind(tag=TAG).info(f"===========MedicalQwen 健康检查结果: {'正常' if qwen_healthy else '【不可用，进入降级路径】'}")
+    else:
+        qwen_healthy = False
+        logger.bind(tag=TAG).warning("===========MedicalQwen未配置，【进入降级路径】===========")
+
+    if qwen_healthy:
+        return _normal_medical_flow(conn, question)
+    else:
+        return _fallback_medical_flow(conn, question)
+
+
+def _normal_medical_flow(conn, question):
+    """
+    正常医疗问答流水线（MedicalQwen 健康时走此路径）
+
+    流程：Query改写 → RAGFlow检索 → 知识压缩 → MedicalQwen推理 → 校验
+    """
+    import re
+
+    # ===== 阶段1：给用户确认回复 =====
+    clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
+    _send_progress_tts(conn, f"好的。")
+    _send_progress_tts(conn, f"正在查询关于{clean_question}的问题，请稍候。")
+
+    # ===== 阶段2：查询RAGFlow知识库（含Query改写、RAGFlow检索、知识压缩）=====
+    _send_progress_tts(conn, "正在检索知识库。")
+    knowledge_context = _query_knowledge_base(conn, question)
+
+    # ===== 阶段3：告知用户准备输出结果 =====
+    # 注意：此时才播报"已查询到结果"，确保不误导用户
+    _send_progress_tts(conn, "已为您查询到以下医疗信息。")
+    # _call_medical_qwen 内部已调用 _medical_verify 追加免责声明，
+    # 此处不再重复调用，避免双重免责声明
+    medical_answer = _call_medical_qwen(conn, question, knowledge_context)
+    logger.bind(tag=TAG).info(f"===========医疗大模型回答结果===========：{medical_answer}")
+    if not medical_answer:
+        return ActionResponse(
+            Action.RESPONSE,
+            None,
+            "医疗系统繁忙，请稍后再试",
+        )
+
+    logger.bind(tag=TAG).info(f"===========医疗问答完成，回答长度: {len(medical_answer)} 字符===========")
+
+    # 返回给通用LLM做最终话术润色
+    return ActionResponse(Action.REQLLM, medical_answer, None)
+
+
+def _fallback_medical_flow(conn, question):
+    """
+    降级医疗问答（MedicalQwen 不可用时走此路径）
+
+    直接查 RAGFlow，然后用通用LLM回答：
+    - Level 1：RAGFlow有结果 → 通用LLM 基于知识库整理回答
+    - Level 2：RAGFlow无结果 → 通用LLM 基于自身知识回答
+    - Level 3：通用LLM也失败 → 错误消息
+    """
+    import re
+
+    logger.bind(tag=TAG).warning(f"===========进入【医疗降级路径】===========，问题: {question}")
+
+    # ===== 阶段1：给用户确认回复 =====
+    clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
+    _send_progress_tts(conn, f"好的。")
+    _send_progress_tts(conn, f"正在查询关于{clean_question}的问题，请稍候。")
+    _send_progress_tts(conn, "正在检索知识库。")
+
+    # ===== 阶段2：直接查RAGFlow（跳过Query改写，因为8106已挂）=====
+    try:
+        from plugins_func.functions.search_from_ragflow import search_from_ragflow_v2
+        rag_result = search_from_ragflow_v2(conn, question=question)
+
+        if rag_result and rag_result.action == Action.REQLLM and rag_result.result:
+            # Level 1：有知识库结果 → 通用LLM整理后回答
+            knowledge_text = _strip_ragflow_markdown(rag_result.result.strip())
+            if knowledge_text:
+                logger.bind(tag=TAG).info(f"============【降级路径：RAGFlow】 返回内容，长度: {len(knowledge_text)} 字符============")
+                _send_progress_tts(conn, "已查询到相关知识，正在整理回答。")
+                fallback_answer = _fallback_answer_with_llm(
+                    conn, question, knowledge_text
+                )
+                if fallback_answer:
+                    fallback_answer = _medical_verify(fallback_answer)
+                    return ActionResponse(Action.RESPONSE, fallback_answer, None)
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"============【降级路径：RAGFlow】 查询失败: {e}")
+
+    # Level 2：无RAGFlow结果 → 通用LLM基于自身知识回答
+    logger.bind(tag=TAG).info("============【降级路径：RAGFlow】 无结果，使用通用LLM自身知识============")
+    _send_progress_tts(conn, "正在为您解答，请稍候。")
+    fallback_answer = _fallback_answer_with_llm(conn, question, None)
+    if fallback_answer:
+        fallback_answer = _medical_verify(fallback_answer)
+        return ActionResponse(Action.RESPONSE, fallback_answer, None)
+
+    # Level 3：一切不可用
+    logger.bind(tag=TAG).error("============降级路径全部失败============")
+    return ActionResponse(Action.RESPONSE, None, "医疗系统繁忙，请稍后再试")
+
+
+def _fallback_answer_with_llm(conn, question, knowledge_text):
+    """
+    用通用LLM回答医疗问题（降级路径）
+
+    通过 conn.llm.response_no_stream() 调用通用LLM非流式接口，
+    不走 function_call 路径，避免递归调用。
+
+    Args:
+        conn: 连接处理器
+        question: 患者问题
+        knowledge_text: 知识库结果（可能为None）
+
+    Returns:
+        str: 通用LLM生成的回答，失败时返回None
+    """
+    system_prompt = (
+        "你是一名专业的医疗健康助手。请用简洁易懂的中文回答患者问题，确保信息准确。"
+        "注意：如果无法确定，请明确建议患者咨询医生，不要猜测。"
+    )
+
+    if knowledge_text:
+        user_prompt = (
+            f"患者问题：{question}\n\n"
+            f"参考信息：{knowledge_text}\n\n"
+            f"请优先基于以上参考信息回答患者问题。如果参考信息不足以完整回答，"
+            f"可以用你的医学知识补充。"
+        )
+    else:
+        user_prompt = (
+            f"患者问题：{question}\n\n"
+            f"请根据你的医学知识回答患者问题。如果不确定，请建议就医。"
+        )
+
+    try:
+        answer = conn.llm.response_no_stream(system_prompt, user_prompt)
+        if answer and len(answer.strip()) >= 10:
+            cleaned = answer.strip()
+            logger.bind(tag=TAG).info(f"============【降级路径：通用LLM】回答成功，长度: {len(cleaned)} 字符============")
+            return cleaned
+        logger.bind(tag=TAG).warning("============【降级路径：通用LLM】返回空内容============")
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"============降级路径通用LLM调用失败: {e}")
+
+    return None
+
+
+def _query_knowledge_base(conn, question):
+    """
+    查询RAGFlow知识库（含Query改写优化）
+
+    流程：
+        1. 将患者口语化问题改写为检索友好形式（方案2：Query改写）
+        2. 用改写后的query检索RAGFlow
+        3. 清理RAGFlow返回的markdown格式
+
+    如果RAGFlow不可用或未返回结果，返回空字符串（医疗Qwen将基于自身知识回答）。
+
+    Args:
+        conn: 连接处理器
+        question: 查询问题
+
+    Returns:
+        str: 知识库检索结果文本，为空时表示无结果或查询失败
+    """
+    try:
+        # Step 0: Query改写 —— 将口语化问题转为检索友好形式
+        optimized_query = _optimize_rag_query(conn, question)
+        search_query = optimized_query or question
+        if optimized_query:
+            logger.bind(tag=TAG).info( f"Query改写: 「{question}」 → 「{optimized_query}」")
+        else:
+            logger.bind(tag=TAG).info(f"Query改写未生效，使用原始问题检索: 「{question}」" )
+
+        # Step 1: 用改写后的query检索RAGFlow
+        # 调用知识库插件进行检索
+        rag_result = search_from_ragflow_v2(conn, question=search_query)
+        logger.bind(tag=TAG).info( f"===========RAGFlow检索【初步处理之后】的结果===========: 「{rag_result.result}」")
+
+        if rag_result.action == Action.REQLLM and rag_result.result:
+            raw_text = rag_result.result.strip()
+            # 清理RAGFlow返回的markdown格式，提取纯文本供TTS朗读
+            knowledge_text = _strip_ragflow_markdown(raw_text)
+            logger.bind(tag=TAG).info(f"============RAGFlow返回内容长度: {len(knowledge_text)} 字符============" )
+
+            # Step 2: 用通用LLM压缩知识库内容（过长时）
+            # 通用LLM上下文窗口远大于MedicalQwen(2K)，适合做摘要整理
+            compressed_rag_result = _compress_knowledge(conn, question, knowledge_text)
+            if compressed_rag_result and compressed_rag_result != knowledge_text:
+                ratio = len(compressed_rag_result) / len(knowledge_text) * 100
+                logger.bind(tag=TAG).info(f"============知识库压缩完成: {len(knowledge_text)}→{len(compressed_rag_result)} 字符 "f"({ratio:.0f}%)")
+                return compressed_rag_result
+
+            # 压缩失败或未执行（内容不长），返回原始知识文本
+            return knowledge_text
+        logger.bind(tag=TAG).warning("============RAGFlow【未返回有效结果】============")
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"============RAGFlow【查询失败】: {e}")
+
+    return ""
+
+
+def _compress_knowledge(conn, question, knowledge_text):
+    """
+    用通用LLM压缩知识库内容，使其简洁有序，适配MedicalQwen的小上下文窗口
+
+    通用LLM（通常 8K~32K 上下文）将杂乱冗长的知识库结果整理为简洁摘要，
+    再送入 MedicalQwen（仅 2K 上下文）做医疗推理，避免 token 超限。
+
+    Args:
+        conn: 连接处理器（通过 conn.llm 访问通用LLM）
+        question: 患者原始问题
+        knowledge_text: RAGFlow返回的原始知识库文本
+
+    Returns:
+        str: 压缩后的知识摘要，失败时返回空字符串（调用方用原始内容降级）
+    """
+    # 知识库内容不长时不需要压缩
+    if not knowledge_text or len(knowledge_text) < 300:
+        return ""
+
+    system_prompt = "你是一个医学知识整理助手。请将以下知识库内容压缩为简洁的摘要。"
+    user_prompt = (
+        f"要求：\n"
+        f"1. 只保留与用户问题直接相关的信息\n"
+        f"2. 合并重复和相似的内容\n"
+        f"3. 按逻辑顺序整理\n"
+        f"4. 去除模糊和不确定的表述\n"
+        f"5. 输出简洁连贯的段落，控制在800字以内\n\n"
+        f"用户问题：{question}\n\n"
+        f"知识库内容：\n{knowledge_text}\n\n"
+    )
+
+    _send_progress_tts(conn, "知识库查询结果整理中。")
+
+    try:
+        # 使用通用LLM的非流式接口直接调用，不走function_call路径
+        # 不会触发工具调用，无递归风险
+        compressed = conn.llm.response_no_stream(system_prompt, user_prompt)
+        logger.bind(tag=TAG).info(f"============使用通用LLM整理知识库检索结果【整理之后的结果】============：{compressed}")
+        if compressed:
+            # 剔除大模型输出前后多余空行、空格。
+            cleaned = compressed.strip()
+            # 压缩后有效内容至少 30 字符才认为压缩成功，否则放弃压缩、改用原始知识库文本
+            if len(cleaned) >= 30:
+                logger.bind(tag=TAG).info(f"============使用通用LLM压缩知识库检索结果【成功】============: {len(knowledge_text)}→{len(cleaned)} 字符")
+                return cleaned
+            logger.bind(tag=TAG).warning(f"============知识库压缩结果过短({len(cleaned)}字符)，使用原始内容============")
+        else:
+            logger.bind(tag=TAG).warning("============知识库压缩返回空，使用原始内容============")
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"============知识库压缩失败: {e}")
+
+    return ""
+
+
+def _get_medical_config():
+    """
+    从 config.yaml 读取 MedicalQwen 配置
+
+    独立函数，供 health_check、_optimize_rag_query、_call_medical_qwen 共用。
+    直接在本地读取文件，不依赖 conn.config，避免远程配置覆盖。
+
+    Returns:
+        dict | None: MedicalQwen 配置字典，未找到时返回 None
+    """
+    import yaml
+    try:
+        with open("config.yaml", "r", encoding="utf-8") as f:
+            file_config = yaml.safe_load(f)
+        medical_config = file_config.get("LLM", {}).get("MedicalQwen")
+        return medical_config
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"读取 config.yaml 失败: {e}")
+        return None
+
+
+def _optimize_rag_query(conn, question):
+    """
+    将患者口语化问题改写为知识库检索友好的关键词形式（方案2）
+
+    利用MedicalQwen将"腹透要注意什么？"改写为"腹膜透析 护理注意事项 饮食禁忌 并发症预防"。
+    改写后的query做向量检索，命中率显著高于原始口语化问题。
+
+    注意：此函数依赖 MedicalQwen（8106），降级路径中不应调用。
+
+    Args:
+        conn: 连接处理器
+        question: 患者提出的原始问题
+
+    Returns:
+        str: 改写后的检索query，失败时返回空字符串（调用方降级为原始问题）
+    """
+    from core.utils import llm as llm_utils
+
+    medical_config = _get_medical_config()
+    if not medical_config:
+        logger.bind(tag=TAG).warning("MedicalQwen未配置，跳过【用户Query改写】")
+        return ""
+
+    try:
+        medical_llm = llm_utils.create_instance("medical_qwen", medical_config)
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"创建MedicalQwen实例失败，跳过【用户Query】改写: {e}")
+        return ""
+
+    try:
+        # 优化用户提问
+        user_prompt = QUERY_OPTIMIZE_PROMPT.format(question=question)
+        logger.bind(tag=TAG).info(f"===========优化用户提问===========: 「{question}」 → 「{user_prompt}」")
+
+        # 使用非流式调用获取改写结果
+        optimized = medical_llm.response_no_stream("", user_prompt)
+        logger.bind(tag=TAG).info(f"===========调用大模型获取【用户Query改写结果】===========: 「{question}」 → 「{optimized}」")
+
+        optimized = optimized.strip().strip('"').strip("'") if optimized else ""
+
+        # 校验改写结果是否为关键词组合（而非完整回答）
+        if optimized:
+            if len(optimized) < 4:
+                logger.bind(tag=TAG).warning(f"============【用户Query改写】结果过短: '{optimized}'，使用原始问题============")
+                return ""
+            if len(optimized) > 200:
+                logger.bind(tag=TAG).warning(f"============【用户Query改写】结果过长({len(optimized)}字符)，疑似完整回答，使用原始问题============")
+                return ""
+            # 检测完整句子特征（句号、分号、换行、建议词等）
+            sentence_markers = ["。", "；", "：", "\n", "建议", "注意", "应该", "可以", "需要"]
+            if any(marker in optimized for marker in sentence_markers):
+                logger.bind(tag=TAG).warning(
+                    f"============【用户Query改写】结果疑似完整回答(含句子标记)，使用原始问题============\n"
+                    f"  改写结果: {optimized[:150]}"
+                )
+                return ""
+            logger.bind(tag=TAG).info(f"===========【用户Query改写成功】===========: 「{question}」 → 「{optimized}」")
+            return optimized
+        logger.bind(tag=TAG).warning(f"============【用户Query改写】结果为空，使用原始问题============")
+        return ""
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"===========【用户Query改写调用失败】===========: {e}")
+        return ""
+
+
+def _strip_ragflow_markdown(text: str) -> str:
+    """
+    清理RAGFlow返回结果中的markdown格式符号
+
+    RAGFlow返回的格式示例：
+        # 关于问题【xxx】查到知识库如下
+        ```内容块...```
+
+    清理后只保留纯文本内容，去掉 #、【】、```、\n 等格式符号。
+
+    Args:
+        text: RAGFlow返回的原始文本
+
+    Returns:
+        str: 清理后的纯文本
+    """
+    import re
+
+    # 去掉开头的 "# 关于问题..." 标题行
+    text = re.sub(r"^#\s*关于问题.*?如下\s*\n?", "", text)
+
+    # 去掉 ``` 代码块标记
+    text = text.replace("```", "")
+
+    # 去掉【】以及其中的内容（如【腹膜炎的并发症有哪些？】）
+    text = re.sub(r"【[^】]*】", "", text)
+
+    # 将多个连续换行压缩为单个
+    text = re.sub(r"\n{2,}", "\n", text)
+
+    # 去掉开头结尾的空白
+    text = text.strip()
+
+    return text
+
+
+def _call_medical_qwen(conn, question, knowledge_context):
+    """
+    调用医疗Qwen LLM进行推理
+
+    通过项目工厂模式创建MedicalQwen Provider实例，
+    将知识库上下文和患者问题构造为Prompt后请求医疗Qwen生成回答。
+
+    Args:
+        conn: 连接处理器
+        question: 患者问题
+        knowledge_context: RAGFlow检索的知识库内容（可能为空）
+
+    Returns:
+        str: 医疗Qwen生成的回答文本，失败时返回None
+    """
+    from core.utils import llm as llm_utils
+    from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
+
+    # 使用共享函数读取MedicalQwen配置，避免重复读取逻辑
+    medical_config = _get_medical_config()
+    if not medical_config:
+        logger.bind(tag=TAG).error("============config.yaml 中未找到 MedicalQwen 配置============")
+        return None
+    logger.bind(tag=TAG).info(f"从 config.yaml 读取 MedicalQwen 配置: {medical_config.get('base_url')}")
+    logger.bind(tag=TAG).info(f"============【调用医疗LLM进行推理】medical_config============: {medical_config}")
+
+    try:
+        medical_llm = llm_utils.create_instance("medical_qwen", medical_config)
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"创建 MedicalQwen 实例失败: {e}")
+        return None
+
+    # 构建用户prompt：有知识库时附加上下文，无知识库时直接提问
+    if knowledge_context:
+        user_prompt = f"""你是医疗查询优化助手，根据用户原始问题，扩充并完善下面的知识库检索资料，保留核心医学术语，补充专业同义词汇，使用口语化输出仅返回优化后的完整问题，无额外解释。【知识库检索资料】{knowledge_context}, 【用户原始问题】{question} """
+    else:
+        user_prompt = question
+
+    try:
+        # 构建对话消息列表，使用流式 response() 替代非流式 response_no_stream()
+        dialogue = [
+            {"role": "system", "content": MEDICAL_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        full_answer = ""
+        for chunk in medical_llm.response("", dialogue):
+            if not chunk:
+                continue
+            full_answer += chunk
+            # 流式输出：每个 token 块实时送入 TTS 队列
+            try:
+                conn.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=conn.sentence_id,
+                        sentence_type=SentenceType.MIDDLE,
+                        content_type=ContentType.TEXT,
+                        content_detail=chunk,
+                    )
+                )
+            except Exception:
+                pass
+
+        if full_answer:
+            verified = _medical_verify(full_answer.strip())
+            # 如果校验追加了免责声明等文本，额外流式输出到 TTS
+            if len(verified) > len(full_answer.strip()):
+                extra_text = verified[len(full_answer.strip()):]
+                try:
+                    conn.tts.tts_text_queue.put(
+                        TTSMessageDTO(
+                            sentence_id=conn.sentence_id,
+                            sentence_type=SentenceType.MIDDLE,
+                            content_type=ContentType.TEXT,
+                            content_detail=extra_text,
+                        )
+                    )
+                except Exception:
+                    pass
+            return verified
+        logger.bind(tag=TAG).warning("===========MedicalQwen=========== 返回空内容")
+        return None
+
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"===========MedicalQwen=========== 调用失败: {e}")
+        return None
+
+
+def _get_disclaimer_text() -> str:
+    """
+    从 config.yaml 读取免责声明文本
+
+    从 MedicalQwen.disclaimer 配置项读取，如果未配置则返回默认值。
+
+    Returns:
+        str: 免责声明文本（不含 \n\n⚠️ 前缀，调用方自行添加）
+    """
+    medical_config = _get_medical_config()
+    if medical_config:
+        disclaimer = medical_config.get("disclaimer", "")
+        if disclaimer:
+            return disclaimer.strip()
+    # 默认值
+    return "温馨提示：以上内容仅供参考，不构成医疗诊断及治疗建议，不能替代专业诊疗，如有不适请及时就医并遵从专业医生指导。"
+
+
+def _medical_verify(text):
+    """
+    医疗内容安全校验
+
+    对医疗Qwen或通用LLM的输出进行安全校验，包括：
+    1. 禁忌词过滤/替换（如"不限水"等危险表述）
+    2. 追加免责声明（从 config.yaml MedicalQwen.disclaimer 读取，始终追加）
+
+    Args:
+        text: 医疗回答文本
+
+    Returns:
+        str: 校验处理后的安全文本
+    """
+    if not text:
+        return text
+
+    # 禁忌词替换
+    for old, new in MEDICAL_REPLACEMENTS.items():
+        if old in text:
+            logger.bind(tag=TAG).warning(f"医疗回答含禁忌词「{old}」，已替换")
+            text = text.replace(old, new)
+
+    # 从配置文件读取免责声明并追加
+    disclaimer = _get_disclaimer_text()
+    text += f"\n\n⚠️ {disclaimer}"
+
+    return text

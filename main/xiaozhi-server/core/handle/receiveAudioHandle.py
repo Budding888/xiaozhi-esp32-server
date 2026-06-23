@@ -1,5 +1,6 @@
 import time
 import json
+import uuid
 import asyncio
 from typing import TYPE_CHECKING
 
@@ -85,6 +86,17 @@ async def startToChat(conn: "ConnectionHandler", text):
     if conn.client_is_speaking and conn.client_listen_mode != "manual":
         await handleAbortMessage(conn)
 
+    # ===== 医疗入口预过滤器（最高优先级） =====
+    # 在意图分析和LLM调用之前，直接通过关键词拦截医疗问题
+    # 彻底避开 intent_type / func_handler 初始化时序问题
+    if hasattr(conn, '_is_medical_query') and conn._is_medical_query(actual_text):
+        conn.logger.bind(tag=TAG).info(f"===========医疗入口拦截===========: {actual_text}")
+        conn.sentence_id = str(uuid.uuid4().hex)
+        await send_stt_message(conn, actual_text)
+        # search_medical_question 含同步HTTP调用，使用线程池执行
+        conn.executor.submit(_direct_medical_and_speak, conn, actual_text)
+        return
+
     # 首先进行意图分析，使用实际文本内容
     intent_handled = await handle_user_intent(conn, actual_text)
 
@@ -95,6 +107,70 @@ async def startToChat(conn: "ConnectionHandler", text):
     # 意图未被处理，继续常规聊天流程，使用实际文本内容
     await send_stt_message(conn, actual_text)
     conn.executor.submit(conn.chat, actual_text)
+
+
+def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
+    """
+    直接执行医疗问答并输出语音（在 executor 线程池中运行）
+
+    被医疗入口预过滤器调用，完全绕过 LLM function_call 决策。
+    TTS 内容输出由 search_medical_question 内部处理（RAGFlow 路径直接送入、MedicalQwen 路径流式送入）。
+    """
+    from plugins_func.functions.search_medical_question import search_medical_question
+    from plugins_func.register import Action
+    from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
+    from core.utils.dialogue import Message
+
+    conn.logger.bind(tag=TAG).info(f"===========直接执行医疗问答并输出语音===========: {text}")
+
+    # FIRST 标记：启动 TTS 处理
+    conn.tts.tts_text_queue.put(
+        TTSMessageDTO(
+            sentence_id=conn.sentence_id,
+            sentence_type=SentenceType.FIRST,
+            content_type=ContentType.ACTION,
+        )
+    )
+
+    # 调用 search_medical_question 插件（内容流式输出在内部处理）
+    try:
+        result = search_medical_question(conn, question=text)
+    except Exception as e:
+        conn.logger.bind(tag=TAG).error(f"search_medical_question 异常: {e}")
+        result = None
+
+    # 提取输出文本用于对话记录
+    is_error = True
+    output = "医疗系统繁忙，请稍后再试"
+    if result:
+        if result.action == Action.RESPONSE:
+            output = result.response or result.result or output
+            # RESPONSE 类型：降级路径或错误消息，需要手动 TTS 播报
+            conn.tts.tts_one_sentence(
+                conn, ContentType.TEXT, content_detail=output
+            )
+            # 判断是否为真正的错误消息（非降级成功）
+            is_error = ("医疗系统繁忙" in output or "请稍后再试" in output or not output)
+        elif result.action == Action.REQLLM and result.result:
+            output = result.result.strip()
+            # REQLLM 类型：MedicalQwen 已经在 _call_medical_qwen 中流式输出了 TTS，不重复播报
+            is_error = False
+
+    # LAST 标记：结束 TTS 处理
+    # 注意：免责声明已在 _medical_verify() 内部追加到回答文本中，
+    # 此处不再重复添加，避免用户听到两次 "温馨提示"
+    conn.tts.tts_text_queue.put(
+        TTSMessageDTO(
+            sentence_id=conn.sentence_id,
+            sentence_type=SentenceType.LAST,
+            content_type=ContentType.ACTION,
+        )
+    )
+
+    # 记录对话
+    conn.tts_MessageText = output
+    conn.dialogue.put(Message(role="assistant", content=output))
+    conn.logger.bind(tag=TAG).info(f"===========医疗问答语音输出完成(is_error={is_error})===========")
 
 
 async def no_voice_close_connect(conn: "ConnectionHandler", have_voice):

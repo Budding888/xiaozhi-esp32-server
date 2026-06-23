@@ -10,7 +10,19 @@
       "Bash(pip show *)",
       "Bash(pip check *)",
       "Bash(python *)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(curl *)",
+      "mcp__ide__getDiagnostics",
+      "Bash(netstat -ano)",
+      "Bash(tasklist //FI \"IMAGENAME eq llama-server.exe\")",
+      "Bash(taskkill /F /PID 13100)",
+      "Bash(taskkill /F /PID 10400)",
+      "Bash(taskkill /F /PID 29056)",
+      "Bash(taskkill -f -pid 13100)",
+      "Bash(taskkill -f -pid 10400)",
+      "Bash(taskkill -f -pid 29056)",
+      "Bash(awk '/MEDICAL_REPLACEMENTS/,/^}/' plugins_func/functions/search_medical_question.py)",
+      "Bash(awk '/# ===== /{c=$0} /\": \"/{split\\(c,a,\"# \"\\); print a[2]\": \"NR\"条\"}' plugins_func/functions/search_medical_question.py)"
     ],
     "deny": [],
     "ask": []

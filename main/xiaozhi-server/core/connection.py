@@ -55,13 +55,13 @@ TOOL_CALLING_RULES = """
   1. 实时信息查询（新闻、非本地天气、股价、汇率等）
   2. 执行操作（播放音乐、控制设备、拍照、设置闹钟等）
   3. 知识库检索（当工具列表包含 search_from_ragflow 时，结合用户意图判断是否需要调用）
-  4. 查询非今天的农历信息（明天农历、某日宜忌、节气等）
-  5. 用户说"拍照"时调用 self_camera_take_photo，默认 question 参数为"描述一下看到的物品"
+  4. 医疗健康咨询（当工具列表包含 search_medical_question 时，患者询问腹透护理、饮食推荐、体征咨询、用药禁忌等医疗问题必须调用）
+  5. 查询非今天的农历信息（明天农历、某日宜忌、节气等）
+  6. 用户说"拍照"时调用 self_camera_take_photo，默认 question 参数为"描述一下看到的物品"
 
 - **何时无需调用工具：**
   1. `<context>` 中已提供的信息（当前时间、今天日期、今天农历、本地天气等）
   2. 普通对话、问候、闲聊、情感交流、讲故事
-  3. 通用知识问答（非实时信息）
 
 - **调用规范：**
   1. 每次请求独立判断，不复用历史工具结果，需重新获取最新数据
@@ -935,6 +935,22 @@ class ConnectionHandler:
                         f"对话历史较长({dialogue_length}条)，已注入{reminder_level}等级工具调用规则强化，当前可用工具：{tool_summary}"
                     )
 
+        # ===== 医疗意图直接路由 =====
+        # 关键词匹配命中后，绕过 LLM function_call，直接调用 search_medical_question
+        if (
+            depth == 0
+            and query is not None
+            and self.intent_type == "function_call"
+            and hasattr(self, "func_handler")
+            and self.func_handler is not None
+            and self.func_handler.has_tool("search_medical_question")
+        ):
+            if self._is_medical_query(query):
+                self.logger.bind(tag=TAG).info(
+                    f"医疗预过滤器命中，直接路由到 search_medical_question: {query}"
+                )
+                return self._direct_medical_chat(query)
+
         response_message = []
 
         # 如果有工具调用提醒，临时添加到对话中（标记为临时消息）
@@ -1193,6 +1209,174 @@ class ConnectionHandler:
             datas.append(name)
         result = "、".join(datas)
         return result
+
+    def _is_medical_query(self, query: str) -> bool:
+        """
+        通过关键词匹配检测是否为腹透医疗问题
+
+        当用户问题命中以下关键词时，判定为医疗问题，
+        将触发强制路由到 search_medical_question 工具。
+
+        注意：在医疗关键词匹配之前，先执行排除逻辑：
+        - 体征数据上报/记录/查询（如"上报血压150/90"）→ 不走医疗通道
+        - 服药提醒更新（如"更新服药提醒"）→ 不走医疗通道
+        - 显式要求从知识库查询（如"从知识库查询"）→ 不走医疗通道
+
+        Args:
+            query: 用户输入文本
+
+        Returns:
+            bool: 是否为医疗问题
+        """
+        if not query:
+            return False
+
+        # ================================================================
+        # 排除模式1：体征数据上报/记录/查询
+        # 当查询同时包含体征测量词和上报操作词时，判定为数据上报意图
+        # 应由通用LLM的function_call路由到对应插件（submit_xxx_data等）
+        # ================================================================
+        REPORTING_VERBS = {"上报", "提交", "登记", "报上去", "上交", "提交一下", "上报一下", "帮我提交", "帮我上报", "反馈一下",
+                           "记录", "录入", "保存", "记下来", "存一下", "帮我记下", "录入进去", "保存一下",
+                           "查询", "查一下", "查查", "检索", "查阅", "调取", "询查", "核验", "核对", "浏览", "查一查", "看一看", "找一找", "帮我查下", "翻一下", "搜一下", "看下记录",
+                           }
+        MEASUREMENT_NOUNS = {"血压", "血糖", "体重", "尿量", "心率", "高压", "低压", "收缩压", "舒张压",}
+
+        has_reporting_verb = any(v in query for v in REPORTING_VERBS)
+        has_measurement = any(n in query for n in MEASUREMENT_NOUNS)
+
+        if has_reporting_verb and has_measurement:
+            self.logger.bind(tag=TAG).info(f"医疗预过滤器排除（体征数据上报/查询）: {query[:50]}")
+            return False
+
+        # ================================================================
+        # 排除模式2：服药提醒更新
+        # 如"更新服药提醒"、"帮我更新一下用药提醒"
+        # 应由通用LLM的function_call路由到 update_medication_reminder_status
+        # ================================================================
+        if "更新" in query and ("提醒" in query or "服药" in query or "用药提醒" in query):
+            self.logger.bind(tag=TAG).info( f"医疗预过滤器排除（服药提醒更新）: {query[:50]}")
+            return False
+
+        # ================================================================
+        # 排除模式3：显式要求从知识库查询
+        # 如"腹透患者饮食注意事项，从知识库查询"、"在知识库查一下腹膜炎的症状"
+        # 用户明确要从知识库检索，不需要MedicalQwen推理，直接走到LLM function_call
+        # ================================================================
+        KNOWLEDGE_BASE_MARKERS = {"从知识库", "知识库查", "查知识库", "知识库检索", "知识库里有"}
+        if any(marker in query for marker in KNOWLEDGE_BASE_MARKERS):
+            self.logger.bind(tag=TAG).info(
+                f"医疗预过滤器排除（显式知识库查询）: {query[:50]}"
+            )
+            return False
+
+        # ================================================================
+        # 医疗知识关键词匹配
+        # ================================================================
+        MEDICAL_KEYWORDS = [
+            # 腹透相关
+            "腹透", "腹膜透析", "透析", "腹膜炎",
+            "腹透液", "透析液", "出口感染", "管路",
+            "换液", "换药", "碘伏帽",
+            # 并发症
+            "并发症", "感染", "发炎",
+            # 饮食营养
+            "饮食", "吃什么", "忌口", "食谱", "三餐",
+            "营养", "蛋白质", "饮水量", "喝水", "水分",
+            "钾", "磷", "钠", "盐",
+            # 体征
+            "血压", "血糖", "体重", "尿量", "水肿",
+            "超滤", "干体重", "腹围",
+            # 药物
+            "吃药", "用药", "药物", "药", "禁忌",
+            # 护理
+            "护理", "注意", "怎么", "如何",
+            # 症状
+            "肚子痛", "腹痛", "发热", "发烧", "呕吐",
+            "恶心", "头晕", "乏力", "肿胀",
+        ]
+
+        query_lower = query.lower()
+        for keyword in MEDICAL_KEYWORDS:
+            if keyword in query_lower or keyword in query:
+                self.logger.bind(tag=TAG).debug(f"医疗关键词命中: '{keyword}' (query: {query[:30]}...)")
+                return True
+
+        return False
+
+    def _direct_medical_chat(self, query: str) -> bool:
+        """
+        直接路由医疗问题，绕过 LLM function_call
+
+        当关键词预过滤器命中时，直接调用 search_medical_question 插件，
+        不经过 LLM 的 function_call 决策（因为 LLM 可能不可靠地决定不调用工具）。
+
+        Args:
+            query: 用户输入的医疗问题
+
+        Returns:
+            bool: 处理成功返回 True
+        """
+        from plugins_func.functions.search_medical_question import search_medical_question
+
+        self.logger.bind(tag=TAG).info(f"直接路由医疗问题: {query}")
+
+        # FIRST 标记：启动 TTS 流，search_medical_question 内部会播报进度提示
+        self.tts.tts_text_queue.put(
+            TTSMessageDTO(
+                sentence_id=self.sentence_id,
+                sentence_type=SentenceType.FIRST,
+                content_type=ContentType.ACTION,
+            )
+        )
+
+        # 调用 search_medical_question 插件（含内部进度 TTS + MedicalQwen 流式 TTS）
+        try:
+            result = search_medical_question(self, question=query)
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(f"search_medical_question 调用失败: {e}")
+            self.tts.tts_one_sentence( self, ContentType.TEXT, content_detail="医疗系统繁忙，请稍后再试")
+            # 发送结束标记
+            self.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=self.sentence_id,
+                    sentence_type=SentenceType.LAST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+            return True
+
+        if result.action == Action.RESPONSE:
+            # 直接回复
+            text = result.response or result.result or ""
+            if text:
+                self.tts.tts_one_sentence(
+                    self, ContentType.TEXT, content_detail=text
+                )
+            self.dialogue.put(Message(role="assistant", content=text))
+
+        elif result.action == Action.REQLLM and result.result:
+            medical_text = result.result.strip()
+            # 记录医疗回答到对话
+            self.dialogue.put(Message(role="assistant", content=medical_text))
+            # 注意：MedicalQwen 已在 _call_medical_qwen 中流式输出 TTS，
+            # 此处不重复播报，避免用户听到两遍回答
+        else:
+            self.tts.tts_one_sentence(
+                self, ContentType.TEXT, content_detail="医疗系统繁忙，请稍后再试"
+            )
+
+        # 发送结束标记
+        self.tts.tts_text_queue.put(
+            TTSMessageDTO(
+                sentence_id=self.sentence_id,
+                sentence_type=SentenceType.LAST,
+                content_type=ContentType.ACTION,
+            )
+        )
+
+        self.logger.bind(tag=TAG).info("医疗直接路由处理完成")
+        return True
 
     def _handle_function_result(self, tool_results, depth):
         need_llm_tools = []

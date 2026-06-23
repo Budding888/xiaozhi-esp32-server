@@ -187,39 +187,53 @@ plugins:
     description: "当用户问xxx时，调用本方法，使用知识库中的信息回答问题"
     # ragflow接口配置
     base_url: "http://127.0.0.1:8008"
-    # ragflow api访问令牌
-    api_key: "ragflow-xxx"
+    # 本地ragflow api访问令牌
+    api_key: "ragflow-w18hS8UVepb-bGPV1j529RFcvs-3nYVQilkpO1x-bwI"
     # ragflow知识库id
-    dataset_ids: ["123456789"]
+    dataset_ids: []
+    #request_timeout[连接超时：建立TCP连接最长等待时间, 读取超时：连接成功后，完整接收响应的最长等待时间]
+    request_timeout: [10, 50]
+    # 向量候选池/召回候选数，增大候选池有利于排序筛选，但是也会造成搜索时间变长，甚至超时
+    top_k: 100
+    # 相似度阈值(0~1)，低于此值的chunk被过滤 。阈值是过滤门槛，和权重无数学计算关联，但两者互相配合、互相制约：
+    # 权重只改变「混合总分高低」；阈值决定「这条 chunk 留不留」
+    # 同样一段文本，调高向量权重，混合总分会上升，更容易超过阈值被保留；
+    # 同样一段文本，调低向量权重，混合总分会下降，更容易低于阈值被过滤。
+    similarity_threshold: 0.25
+    # 向量权重 < 关键词权重：关键词占主导，检索更看重文字字面匹配；向量权重 > 关键词权重：语义向量占主导，检索更看重意思相近；两者相等：语义、关键词各占一半，平衡口语提问和专业名词检索
+    # 向量权重 0.4，则关键词权重 0.6
+    vector_similarity_weight": 0.4
+    # 系统提示词
+    chat_system_prompt: "你是医疗知识库专属问答助手，优先基于检索到的知识库内容详细作答。当所有知识库内容都与问题无关时，可使用自身专业医疗知识解答，不做诊断、不开处方，术语严谨、逻辑清晰，全程保持医学术语准确、逻辑清晰，语言客观中立，仅做健康知识科普。"
   submit_weight_data:
     description: "当用户说 '我要上报体重数据，今天的体重是XX公斤'、'今天的体重是XX公斤，请上报体重数据'、'体重是XX公斤，请上报'、'我要上报体重，体重是XX公斤'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者体重体征数据上报接口配置
-    api_url: "http://127.0.0.1:8008"
+    api_url: "http://127.0.0.1:xxx"
     api_key: "rpm-xxx"
   submit_blood_glucose_data:
     description: "当用户说 '我要上报血糖数据，今天的血糖是xxxx mmol/L'、'今天的血糖是xxxx mmol/L，请上报血糖数据'、'今天的血糖是xxxx毫摩尔/升，请上报'、'我要上报血糖，血糖是xxxx毫摩尔/升，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:8008"
+    api_url: "http://127.0.0.1:xxx"
     api_key: "rpm-xxx"
   submit_blood_pressure_data:
     description: "当用户说 '我要上报血压数据，今天的高压是150、低压是120'、'今天的高压是150、低压是120，请上报血压数据'、'今天的收缩压是150、舒张压是120，请上报'、'我要上报血压，血压是150、120'、'我要上报血压，血压是150/120'、'我要上报血压，血压是150和120'、'高压150，低压120，请上报'、'收缩压150，舒张压120，请上报'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:8008"
+    api_url: "http://127.0.0.1:xxx"
     api_key: "rpm-xxx"
   submit_urine_volume_data:
     description: "当用户说 '我要上报尿量数据，今天的尿量是xxxx毫升(ml)'、'我的尿量是xxxx，请上报尿量'、'尿量xxxx毫升(ml)，请上报'、'我要上报尿量，尿量是xxxx毫升(ml)'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:8008"
+    api_url: "http://127.0.0.1:xxx"
     api_key: "rpm-xxx"
   submit_heart_rate_data:
     description: "当用户说 '我要上报心率数据，今天的心率是xxxx次/分钟(bpm)'、'我的心率是xxxx，请上报心率'、'心率xxxx次/分钟(bpm)，请上报'、'我要上报心率，心率是xxxx次/分钟(bpm)'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:8008"
+    api_url: "http://127.0.0.1:xxx"
     api_key: "rpm-xxx"
   update_medication_reminder_status:
     description: "当用户说'早上我吃了卡维地洛片, 请上报'、'中午已经服用了XXX药, 请上报'、'下午还没吃药, 请上报'、'早上的药已经吃了'等与用药状态更新相关的指令时调用此功能，更新RPM系统数据"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:8008"
+    api_url: "http://127.0.0.1:xxx"
     api_key: "rpm-xxx"
 
 # 声纹识别配置
@@ -325,8 +339,8 @@ Intent:
     functions:
       - change_role
       - get_weather
-      # - search_from_ragflow
-      # - get_news_from_chinanews
+      - search_from_ragflow
+      - get_news_from_chinanews
       - get_news_from_newsnow
       # play_music是服务器自带的音乐播放，hass_play_music是通过home assistant控制的独立外部程序音乐播放
       # 如果用了hass_play_music，就不要开启play_music，两者只留一个
@@ -335,6 +349,7 @@ Intent:
       #- hass_get_state
       #- hass_set_state
       #- hass_play_music
+      - search_medical_question                    # 腹透医疗问答（知识库+医疗Qwen）
       - submit_weight_data
       - submit_blood_glucose_data
       - submit_blood_pressure_data
@@ -794,6 +809,21 @@ LLM:
     # Xinference服务地址和模型名称
     model_name: qwen2.5:3b-AWQ  # 使用的小模型名称，用于意图识别
     base_url: http://localhost:9997  # Xinference服务地址
+  MedicalQwen:
+    # 医疗Qwen3.5-4B-Medical（外部AutoTokenizer服务，OpenAI兼容接口）
+    # 用于腹透医疗问答，由 search_medical_question 插件触发
+    type: openai
+    # http://127.0.0.1:8104/v1 或 http://127.0.0.1:8106/v1
+#   base_url: http://127.0.0.1:8104/v1
+#   health_check_url: http://127.0.0.1:8104/health
+#   model_name: Qwen3.5-4B-Medical
+    base_url: http://127.0.0.1:8106/v1
+    health_check_url: http://127.0.0.1:8106/health
+    model_name: Qwen3.5-4B-Medical-GRPO
+    api_key: not-neede
+    timeout: 60
+    # 免责申明
+    disclaimer: 温馨提示：以上内容仅供参考，不构成医疗诊断及治疗建议，不能替代专业诊疗，如有不适请及时就医并遵从专业医生指导。
 # VLLM配置（视觉语言大模型）
 VLLM:
   ChatGLMVLLM:
