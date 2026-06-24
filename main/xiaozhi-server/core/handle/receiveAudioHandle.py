@@ -116,7 +116,7 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
     被医疗入口预过滤器调用，完全绕过 LLM function_call 决策。
     TTS 内容输出由 search_medical_question 内部处理（RAGFlow 路径直接送入、MedicalQwen 路径流式送入）。
     """
-    from plugins_func.functions.search_medical_question import search_medical_question
+    from plugins_func.functions.search_medical_question import search_medical_question, _send_disclaimer_tts
     from plugins_func.register import Action
     from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
     from core.utils.dialogue import Message
@@ -157,8 +157,10 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
             is_error = False
 
     # LAST 标记：结束 TTS 处理
-    # 注意：免责声明已在 _medical_verify() 内部追加到回答文本中，
-    # 此处不再重复添加，避免用户听到两次 "温馨提示"
+    # 先发送免责声明（独立 TTS 消息，带停顿），再发 LAST 结束标记
+    # 免责声明作为独立的 TTS 消息发送，time.sleep(1) 让消费者线程在队列空时自然停顿，形成"回答结束 → 停顿 → 温馨提示"的播报节奏。
+    if not is_error:
+        _send_disclaimer_tts(conn)
     conn.tts.tts_text_queue.put(
         TTSMessageDTO(
             sentence_id=conn.sentence_id,

@@ -52,20 +52,25 @@ MEDICAL_QA_FUNCTION_DESC = {
     }
 }
 
-# 医疗Qwen的system prompt（与外部医疗Qwen服务中的约束一致）
-MEDICAL_SYSTEM_PROMPT = """你是一名专业的医疗健康助手。
-约束条件：
-1. 直接回答用户的具体问题，围绕问题核心给出准确信息，不要偏离主题；
-2. 回答要简洁、准确、直接、控制在600字以内、注意断句与标点符号、输出结果完整；
-3. 用户均是腹膜透析患者；
-4. 直接输出最终答案，不要输出推理过程、思考步骤或规划；
-5. 同一个问题中，可能存在多个小问题，需要拆分之后再逐个回答；
-6. 对于回答中的反问，需要继续回答，不能没有答案；
-7. 【知识库优先】知识库检索到的内容与问题直接相关时，以知识库为准；
-8. 【自主判断】知识库未覆盖用户问题或回答信息不完整时，用你自身医学知识补充并完善；
-9. 【忽略噪音】如果知识库检索到的内容与问题无关，忽略它，用自身知识回答；
-10. 使用专业但易懂的中文；
-"""
+# 医疗Qwen的system prompt — 基于知识库，逐条覆盖，段落输出
+# 注意：MedicalQwen 擅长内容生成而非格式整理，编号分点由通用LLM在REQLLM阶段处理
+medical_system_prompt = """你是腹透健康知识问答助手，基于知识库回答患者问题。
+
+【核心原则】
+1. 逐条覆盖知识库中的每一个要点，不得遗漏任何一条；
+2. 知识库信息不足时，用你的医学知识补充完善；
+3. 如果知识库内容与问题无关，忽略它，用自身知识回答。
+
+【回答要求】
+4. 用通俗易懂的口语表达，内容完整覆盖所有要点；
+5. 用连贯的段落回答，确保每个要点都被提及；
+6. 直接回答用户问题，不要输出思考过程；
+7. 控制在600字以内；
+8. 用户均为腹膜透析患者；
+9. 使用简体中文。
+
+【结束标记】
+回答结束后，另起一行输出 ===END==="""
 
 
 
@@ -96,7 +101,7 @@ query_system_prompt = """你是专业医疗查询改写专家。
 
 # 禁忌词替换规则（按类别分组，更具体的短语放前面）
 # 当医疗回答包含以下危险表述时，自动替换为安全措辞
-MEDICAL_REPLACEMENTS = {
+medical_replacements = {
     # ===== 饮水控制 =====
     "不用控制饮水": "遵医嘱控制饮水量",
     "不需要限制饮水": "遵医嘱控制饮水量",
@@ -423,7 +428,7 @@ def _query_knowledge_base(conn, question):
             compressed_rag_result = _compress_knowledge(conn, question, knowledge_text)
             if compressed_rag_result and compressed_rag_result != knowledge_text:
                 ratio = len(compressed_rag_result) / len(knowledge_text) * 100
-                logger.bind(tag=TAG).info(f"============知识库压缩完成: {len(knowledge_text)}→{len(compressed_rag_result)} 字符 "f"({ratio:.0f}%)")
+                logger.bind(tag=TAG).info(f"============知识库压缩完成: 从{len(knowledge_text)} 压缩到--→{len(compressed_rag_result)} 字符 "f"--→压缩率为：{ratio:.0f}%")
                 return compressed_rag_result
 
             # 压缩失败或未执行（内容不长），返回原始知识文本
@@ -694,16 +699,27 @@ def _call_medical_qwen(conn, question, knowledge_context):
         logger.bind(tag=TAG).error(f"创建 MedicalQwen 实例失败: {e}")
         return None
 
-    # 构建用户prompt：有知识库时附加上下文，无知识库时直接提问
+    # 构建用户prompt：要求逐条覆盖知识库全部要点，段落输出，加结束标记
     if knowledge_context:
-        user_prompt = f"""【知识库检索资料】{knowledge_context}, 【用户原始问题】{question} """
+        user_prompt = f"""【知识库参考内容】
+        {knowledge_context}
+
+        【患者问题】
+        {question}
+
+        回答要求：
+        1. 逐条覆盖以上参考内容中的每一个要点，全部保留、不得遗漏；
+        2. 用连贯的段落回答，确保每个要点都被自然提及；
+        3. 全部要点覆盖完后，如果知识库不足以完全回答问题，补充你的医学知识；
+        4. 如果知识库已完整覆盖，则无需补充。
+        5. 回答结束后，另起一行输出 ===END==="""
     else:
-        user_prompt = question
+        user_prompt = f"""【患者问题】 {question} 回答结束后，另起一行输出 ===END==="""
 
     try:
         # 构建对话消息列表，使用流式 response() 替代非流式 response_no_stream()
         dialogue = [
-            {"role": "system", "content": MEDICAL_SYSTEM_PROMPT},
+            {"role": "system", "content": medical_system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
@@ -726,21 +742,8 @@ def _call_medical_qwen(conn, question, knowledge_context):
                 pass
 
         if full_answer:
+            # 只做禁忌词替换，不追加免责声明（免责声明由调用方以独立 TTS 消息发送，带停顿）
             verified = _medical_verify(full_answer.strip())
-            # 如果校验追加了免责声明等文本，额外流式输出到 TTS
-            if len(verified) > len(full_answer.strip()):
-                extra_text = verified[len(full_answer.strip()):]
-                try:
-                    conn.tts.tts_text_queue.put(
-                        TTSMessageDTO(
-                            sentence_id=conn.sentence_id,
-                            sentence_type=SentenceType.MIDDLE,
-                            content_type=ContentType.TEXT,
-                            content_detail=extra_text,
-                        )
-                    )
-                except Exception:
-                    pass
             return verified
         logger.bind(tag=TAG).warning("===========MedicalQwen=========== 返回空内容")
         return None
@@ -748,6 +751,25 @@ def _call_medical_qwen(conn, question, knowledge_context):
     except Exception as e:
         logger.bind(tag=TAG).error(f"===========MedicalQwen=========== 调用失败: {e}")
         return None
+
+
+def _send_disclaimer_tts(conn):
+    """
+    以独立 TTS 消息发送免责声明（带停顿，避免与主回答紧贴）
+
+    在 answer 的 TTS 已入队后、LAST 标记发送前调用。
+    内部 sleep 1 秒形成播报间隙，消费者线程在队列空时自然停顿。
+    """
+    import time
+    try:
+        disclaimer = _get_disclaimer_text()
+        time.sleep(1.0)
+        from core.providers.tts.dto.dto import ContentType
+        conn.tts.tts_one_sentence(
+            conn, ContentType.TEXT, content_detail=f"⚠️ {disclaimer}"
+        )
+    except Exception:
+        pass
 
 
 def _get_disclaimer_text() -> str:
@@ -772,9 +794,9 @@ def _medical_verify(text):
     """
     医疗内容安全校验
 
-    对医疗Qwen或通用LLM的输出进行安全校验，包括：
+    对医疗Qwen或通用LLM的输出进行安全校验：
     1. 禁忌词过滤/替换（如"不限水"等危险表述）
-    2. 追加免责声明（从 config.yaml MedicalQwen.disclaimer 读取，始终追加）
+    2. 注意：免责声明不在此追加，由调用方以独立 TTS 消息发送
 
     Args:
         text: 医疗回答文本
@@ -786,7 +808,7 @@ def _medical_verify(text):
         return text
 
     # 禁忌词替换
-    for old, new in MEDICAL_REPLACEMENTS.items():
+    for old, new in medical_replacements.items():
         if old in text:
             logger.bind(tag=TAG).warning(f"医疗回答含禁忌词「{old}」，已替换")
             text = text.replace(old, new)

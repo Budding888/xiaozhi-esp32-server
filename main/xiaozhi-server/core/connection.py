@@ -1317,7 +1317,7 @@ class ConnectionHandler:
         Returns:
             bool: 处理成功返回 True
         """
-        from plugins_func.functions.search_medical_question import search_medical_question
+        from plugins_func.functions.search_medical_question import search_medical_question, _send_disclaimer_tts
 
         self.logger.bind(tag=TAG).info(f"直接路由医疗问题: {query}")
 
@@ -1366,7 +1366,15 @@ class ConnectionHandler:
                 self, ContentType.TEXT, content_detail="医疗系统繁忙，请稍后再试"
             )
 
-        # 发送结束标记
+        # 非错误时先发送免责声明（独立 TTS 消息带停顿），再发结束标记
+        is_error = (
+            result.action != Action.RESPONSE and result.action != Action.REQLLM
+        ) or (
+            result.action == Action.RESPONSE
+            and ("医疗系统繁忙" in (result.response or result.result or ""))
+        )
+        if not is_error:
+            _send_disclaimer_tts(self)
         self.tts.tts_text_queue.put(
             TTSMessageDTO(
                 sentence_id=self.sentence_id,
