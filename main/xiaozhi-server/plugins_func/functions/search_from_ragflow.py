@@ -256,7 +256,40 @@ def search_from_ragflow(conn: "ConnectionHandler", question=None):
 
 
 
+'''
+问题分析
 
+  原始参数中 top_k=100、similarity_threshold=0.25 导致 RAGFlow 返回大量低相关度 chunk，其中很多与问题无关。
+
+  优化项
+  
+  ┌──────────────┬──────┬──────────────────┬────────────────────────────────────────┐
+  │     优化     │ 旧值 │       新值       │                  作用                  │
+  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
+  │ top_k 上限   │ 100  │ min(配置值, 15)  │ 从源头减少无关结果数量                 │
+  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
+  │ 相似度阈值   │ 0.25 │ max(配置值, 0.3) │ 提高过滤门槛，只保留更相关的结果       │
+  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
+  │ 最短内容过滤 │ 无   │ < 10 字符丢弃    │ 过滤纯噪音片段                         │
+  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
+  │ 内容去重     │ 无   │ 前50字指纹去重   │ 去除内容高度重叠的多个 chunk           │
+  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
+  │ 最大输出控制 │ 无   │ 取 top 8 条      │ 控制最终输出量                         │
+  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
+  │ 总长度限制   │ 无   │ 3000 字符截断    │ 防止 MedicalQwen (2K上下文) token 超限 │
+  └──────────────┴──────┴──────────────────┴────────────────────────────────────────┘
+
+  过滤流水线
+
+  RAGFlow API 返回原始 chunks (最多15条)
+    → 相似度 ≥ 0.3 过滤
+    → 内容长度 ≥ 10 字符过滤
+    → 按相似度降序排列
+    → 内容指纹去重（前50字）
+    → 取 top 8
+    → 总长度 ≤ 3000 字符截断
+    → 返回给调用方
+'''
 
 
 
@@ -267,7 +300,6 @@ def search_from_ragflow_v2(conn: "ConnectionHandler", question=None):
     logger.bind(tag=TAG).info(f"===========触发知识库问答(search_from_ragflow_v2)===========，问题: {question}")
     # 确保字符串参数正确处理编码
     if question and isinstance(question, str):
-        # 确保问题参数是UTF-8编码的字符串
         pass
     else:
         question = str(question) if question is not None else ""
@@ -276,14 +308,16 @@ def search_from_ragflow_v2(conn: "ConnectionHandler", question=None):
     base_url = ragflow_config.get("base_url", "")
     api_key = ragflow_config.get("api_key", "")
     dataset_ids = ragflow_config.get("dataset_ids", [])
-    # 读取检索参数
-    top_k = ragflow_config.get("top_k", 100)
-    similarity_threshold = ragflow_config.get("similarity_threshold", 0.25)
-    vector_similarity_weight = ragflow_config.get("vector_similarity_weight", 0.4)
-    # 读取配置：8s建立连接，25s读取完整响应
+
+    # ===== 检索参数优化：用更严格的默认值 =====
+    # 远程配置可能设得过于宽松（top_k=100, 阈值=0.25），服务端做安全兜底
+    top_k = min(int(ragflow_config.get("top_k", 100)), 15)           # 最多取15条，取配置与上限的较小值
+    similarity_threshold = max(float(ragflow_config.get("similarity_threshold", 0.25)), 0.3)  # 最低0.3
+    vector_similarity_weight = float(ragflow_config.get("vector_similarity_weight", 0.4))
+    # 读取配置
     req_timeout = ragflow_config.get("request_timeout", (10, 50))
 
-    # 调用RagFlow知识库的教唆接口
+    # 调用RagFlow知识库的检索接口
     url = base_url + "/api/v1/retrieval"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -296,6 +330,10 @@ def search_from_ragflow_v2(conn: "ConnectionHandler", question=None):
         "vector_similarity_weight": vector_similarity_weight,
         "keyword": True,
     }
+    logger.bind(tag=TAG).info(
+        f"RAGFlow 检索参数: top_k={top_k}, threshold={similarity_threshold}, "
+        f"vector_weight={vector_similarity_weight}"
+    )
 
     try:
         # 使用带重试机制的 API 调用（网络异常和 5xx 自动重试 2 次）
@@ -307,73 +345,103 @@ def search_from_ragflow_v2(conn: "ConnectionHandler", question=None):
 
         import json
         result = json.loads(response_text)
-        logger.bind(tag=TAG).info(f"===========RAGFlow API调用成功，返回的原始结果===========：{result}")
+        logger.bind(tag=TAG).debug(f"===========RAGFlow API调用成功，返回的原始结果===========：{result}")
 
         if result.get("code") != 0:
             error_detail = result.get("error", {}).get("detail", "未知错误")
             error_message = result.get("error", {}).get("message", "")
             error_code = result.get("code", "")
-
-            # 记录错误信息
-            logger.bind(tag=TAG).error( f"RAGFlow API调用失败，响应码：{error_code}，错误详情：{error_detail}，完整响应：{result}")
-
-            # 构建详细的错误响应
+            logger.bind(tag=TAG).error(f"RAGFlow API调用失败，响应码：{error_code}，错误详情：{error_detail}")
             error_response = f"RAG接口返回异常（错误码：{error_code}）"
-
             if error_message:
                 error_response += f"：{error_message}"
             if error_detail:
                 error_response += f"\n详情：{error_detail}"
-
             return ActionResponse(Action.RESPONSE, None, error_response)
 
         chunks = result.get("data", {}).get("chunks", [])
-        # logger.bind(tag=TAG).info(f"===========RAGFlow检索到的chunks===========：{chunks}")
-        contents = []
 
-        # 按相似度得分排序、过滤低相关度chunk
+        # ===== 多阶段过滤：相似度 → 内容质量 → 去重 → 截断 =====
         scored_chunks = []
         for chunk in chunks:
             content = chunk.get("content", "")
             if not content:
                 continue
-            # 安全地处理内容字符串
             if isinstance(content, bytes):
                 content = content.decode("utf-8", errors="replace")
             elif not isinstance(content, str):
                 content = str(content)
 
-            similarity = chunk.get("similarity", chunk.get("score", 1.0))
+            content = content.strip()
+            # 过滤过短chunk（纯噪音）
+            if len(content) < 10:
+                continue
+
+            similarity = float(chunk.get("similarity", chunk.get("score", 1.0)))
             scored_chunks.append((similarity, content))
 
-        # 按相似度降序排列（最相关在前）
-        scored_chunks.sort(key=lambda x: float(x[0]), reverse=True)
+        # 按相似度降序排列
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
 
-        # 过滤低相关度chunk，并记录日志
+        # 过滤低相关度chunk
         before_count = len(scored_chunks)
-        scored_chunks = [
-            (score, text) for score, text in scored_chunks
-            if score >= similarity_threshold
-        ]
+        scored_chunks = [(s, t) for s, t in scored_chunks if s >= similarity_threshold]
         after_count = len(scored_chunks)
 
         if before_count != after_count:
-            logger.bind(tag=TAG).info( f"相似度阈值过滤: {before_count} -> {after_count} 个chunk " f"(阈值={similarity_threshold})")
+            logger.bind(tag=TAG).info(
+                f"相似度阈值过滤: {before_count} -> {after_count} 个chunk (阈值={similarity_threshold})"
+            )
 
         if after_count == 0 and before_count > 0:
             logger.bind(tag=TAG).warning(
-                f"所有chunk均低于相似度阈值({similarity_threshold})，"
-                f"将返回空结果让医疗Qwen基于自身知识回答"
+                f"所有chunk均低于相似度阈值({similarity_threshold})，返回空结果"
             )
 
+        # 内容去重：去除内容高度重叠的chunk（保留相似度更高的那个）
+        deduped = []
+        seen_texts = set()
         for score, content in scored_chunks:
-            logger.bind(tag=TAG).debug( f"chunk相似度={score:.4f}, 内容前40字: {content[:40]}..." )
-            contents.append(content)
+            # 用前50字作为去重指纹（去掉空格和标点）
+            fingerprint = content[:50].strip()
+            if fingerprint not in seen_texts:
+                seen_texts.add(fingerprint)
+                deduped.append((score, content))
 
-        if contents:
+        if len(deduped) < len(scored_chunks):
+            logger.bind(tag=TAG).info(
+                f"内容去重: {len(scored_chunks)} -> {len(deduped)} 个chunk"
+            )
+
+        # 最终取 top 8（去重后控制输出量）
+        final_chunks = deduped[:8]
+
+        for score, content in final_chunks:
+            logger.bind(tag=TAG).debug(f"chunk相似度={score:.4f}, 内容前40字: {content[:40]}...")
+
+        if final_chunks:
+            # 限制总内容长度，避免 MedicalQwen (2K上下文) token 超限
+            MAX_TOTAL_LENGTH = 3000
+            contents = []
+            total_len = 0
+            for _, content in final_chunks:
+                if total_len + len(content) > MAX_TOTAL_LENGTH:
+                    # 截断过长的最后一条
+                    remain = MAX_TOTAL_LENGTH - total_len
+                    if remain > 100:
+                        contents.append(content[:remain] + "…")
+                    break
+                contents.append(content)
+                total_len += len(content)
+
             context_text = f"# 关于问题【{question}】知识库的检索结果如下\n"
             context_text += "```\n\n\n".join(contents)
             context_text += "\n```"
+            logger.bind(tag=TAG).info(
+                f"RAGFlow 检索完成: {len(chunks)}个原始chunk → "
+                f"{len(final_chunks)}个去重后chunk → "
+                f"{total_len}字符内容"
+            )
         else:
             context_text = "根据知识库查询结果，没有相关信息。"
         return ActionResponse(Action.REQLLM, context_text, None)

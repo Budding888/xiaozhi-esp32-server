@@ -72,14 +72,14 @@ MEDICAL_SYSTEM_PROMPT = """你是一名专业的医疗健康助手。
 # Query改写prompt — 将口语化问题转为知识库检索友好的关键词形式
 # 注意：改写结果将被用于RAGFlow向量检索，目标是提升检索命中率，
 # 而不是生成回答。改写结果应为关键词组合，而非完整回答。
-QUERY_OPTIMIZE_PROMPT = """你是一名医疗查询改写专家。你的任务是将患者的口语化问题改写成知识库检索用的关键词组合。
+query_system_prompt = """你是专业医疗查询改写专家。
+任务：把患者口语提问转换成知识库检索关键词，仅输出关键词，禁止完整解答、禁止多余解释。
 要求：
-1. 提取核心医学概念和关键词（如"腹透"→"腹膜透析 腹透"）
-2. 补充同义词和相关术语
-3. 多概念用空格分隔
-4. 只输出改写后的关键词文本，不要解释，不要多余内容
-5. 不要输出思考过程
-6. 控制在100字以内
+1. 提取核心医学名词，补充标准同义术语；
+2. 多个关键词使用英文空格隔开，不要使用其他标点符号分隔；
+3. 仅输出一行关键词，无换行、无标点说明、无思考过程；
+4. 总长度控制在50字符以内。
+5. 使用简体中文回答
 
 示例：
 患者问题：腹透患者感冒了应该吃什么药？
@@ -403,9 +403,9 @@ def _query_knowledge_base(conn, question):
         optimized_query = _optimize_rag_query(conn, question)
         search_query = optimized_query or question
         if optimized_query:
-            logger.bind(tag=TAG).info( f"Query改写: 「{question}」 → 「{optimized_query}」")
+            logger.bind(tag=TAG).info( f"===========用户Query改写成功: 「原始问题：{question}」 → 「优化后问题：{optimized_query}」")
         else:
-            logger.bind(tag=TAG).info(f"Query改写未生效，使用原始问题检索: 「{question}」" )
+            logger.bind(tag=TAG).info(f"===========用户Query改写未生效，使用原始问题检索: 「{question}」" )
 
         # Step 1: 用改写后的query检索RAGFlow
         # 调用知识库插件进行检索
@@ -471,6 +471,7 @@ def _compress_knowledge(conn, question, knowledge_text):
     try:
         # 使用通用LLM的非流式接口直接调用，不走function_call路径
         # 不会触发工具调用，无递归风险
+        logger.bind(tag=TAG).info(f"============使用通用LLM整理知识库检索结果============：system_prompt：{system_prompt} → user_prompt：{user_prompt}")
         compressed = conn.llm.response_no_stream(system_prompt, user_prompt)
         logger.bind(tag=TAG).info(f"============使用通用LLM整理知识库检索结果【整理之后的结果】============：{compressed}")
         if compressed:
@@ -512,68 +513,118 @@ def _get_medical_config():
 
 def _optimize_rag_query(conn, question):
     """
-    将患者口语化问题改写为知识库检索友好的关键词形式（方案2）
-
-    利用MedicalQwen将"腹透要注意什么？"改写为"腹膜透析 护理注意事项 饮食禁忌 并发症预防"。
-    改写后的query做向量检索，命中率显著高于原始口语化问题。
-
-    注意：此函数依赖 MedicalQwen（8106），降级路径中不应调用。
-
+    将患者口语化问题改写为知识库检索友好的关键词形式
+    利用MedicalQwen将口语问题转为关键词组合，提升RAGFlow向量检索命中率。
+    清洗流水线：去引号 → 合并换行 → 中文分隔符→空格 → 长度校验 → 句子标记检测
     Args:
         conn: 连接处理器
         question: 患者提出的原始问题
 
     Returns:
-        str: 改写后的检索query，失败时返回空字符串（调用方降级为原始问题）
+        str: 改写后的检索query（空格分隔），失败返回空字符串（降级原始问题）
+
+    1. temperature=0.2
+        temperature 控制大模型生成随机性、创造性，取值范围 0 ~ 1：
+        -越接近 0：模型输出越稳定、保守、固定，优先选择概率最高的文字，几乎不会发挥、不会乱发挥；
+        -越接近 1：模型随机性越强，会选低概率词汇，回答更多变、有创意，适合聊天、文案创作。
+
+        你当前场景为什么设 0.2（极低温度）
+        你的需求是标准化关键词提取，不允许模型自由发挥：
+        不能随意增减术语、不能变换句式、不能即兴写多余文字；
+        同一个患者问题，每次改写输出要高度统一，保证检索向量稳定；
+        如果调高到 0.7/0.8，模型容易时不时输出完整句子、新增无关词汇，触发后面的标点校验拦截，改写失效。
+
+        参考取值对照
+        ---------------------------------------------------------------
+        0 ~ 0.3：摘要、关键词提取、查询改写、工具调用、结构化输出（你现在的场景）
+        0.4 ~ 0.7：通用问答、医疗科普回复
+        0.8 ~ 1.0：创意写作、闲聊、故事生成
+        ---------------------------------------------------------------
+
+        2. max_tokens=128 【1 token ≈ 0.5 个汉字】
+        限制模型单次最多能生成多少个 token（文字片段），防止无限输出超长内容。
+        中文粗略换算：1 token ≈ 0.5 个汉字，128 tokens 大约支持 60 个汉字左右。
+        适配你的业务规则
+        你的 Prompt 明确约束改写关键词控制在 50 字符以内：
+        设置 max_tokens=128 留出少量冗余，避免刚好卡 50 字时报截断；
+        硬性兜底：哪怕模型不受约束想写长篇大段回答，到 128token 会强制停止；
+        配合后面代码 if len(optimized) > 50 二次校验，双重拦截超长文本；
+        限制 token 同时减少推理耗时，提升接口响应速度。
     """
     from core.utils import llm as llm_utils
 
     medical_config = _get_medical_config()
     if not medical_config:
-        logger.bind(tag=TAG).warning("MedicalQwen未配置，跳过【用户Query改写】")
+        logger.bind(tag=TAG).warning("MedicalQwen未配置，跳过Query改写")
         return ""
 
     try:
         medical_llm = llm_utils.create_instance("medical_qwen", medical_config)
     except Exception as e:
-        logger.bind(tag=TAG).error(f"创建MedicalQwen实例失败，跳过【用户Query】改写: {e}")
+        logger.bind(tag=TAG).error(f"创建MedicalQwen实例失败，跳过Query改写: {e}")
         return ""
 
+    query_user_input = f"患者问题：{question}\n优化后的查询："
     try:
-        # 优化用户提问
-        user_prompt = QUERY_OPTIMIZE_PROMPT.format(question=question)
-        logger.bind(tag=TAG).info(f"===========优化用户提问===========: 「{question}」 → 「{user_prompt}」")
+        optimized = medical_llm.response_no_stream(
+            system_prompt=query_system_prompt,
+            user_prompt=query_user_input,
+            # 控制大模型生成随机性、创造性
+            temperature=0.2,
+            # 限制模型单次最多能生成多少个 token（文字片段），防止无限输出超长内容
+            max_tokens=128
+        )
+        logger.bind(tag=TAG).info(f"===========用户Query改写 | 原始问句:「{question}」→ 模型原始输出:「{optimized}」")
 
-        # 使用非流式调用获取改写结果
-        optimized = medical_llm.response_no_stream("", user_prompt)
-        logger.bind(tag=TAG).info(f"===========调用大模型获取【用户Query改写结果】===========: 「{question}」 → 「{optimized}」")
+        if not optimized:
+            logger.bind(tag=TAG).warning("===========用户Query改写 | 模型返回为空，降级原始问题")
+            return ""
 
-        optimized = optimized.strip().strip('"').strip("'") if optimized else ""
+        # ===== 清洗流水线 =====
+        # Step 1: 去引号、首尾空白
+        optimized = optimized.strip().strip('"').strip("'")
+        # Step 2: 换行合并为空格
+        optimized = " ".join(optimized.splitlines())
+        # Step 3: 中文分隔符统一替换为空格（模型习惯输出逗号而非空格）
+        for sep in ["，", "、", ";", "；"]:
+            optimized = optimized.replace(sep, " ")
+        # Step 4: 去处尾部的标点符号
+        optimized = strip_end_punctuation(optimized)
+        # Step 5: 合并连续空格
+        optimized = " ".join(optimized.split())
+        logger.bind(tag=TAG).info(f"===========用户Query改写 | 清洗后:「{optimized}」(len={len(optimized)})")
 
-        # 校验改写结果是否为关键词组合（而非完整回答）
-        if optimized:
-            if len(optimized) < 4:
-                logger.bind(tag=TAG).warning(f"============【用户Query改写】结果过短: '{optimized}'，使用原始问题============")
-                return ""
-            if len(optimized) > 200:
-                logger.bind(tag=TAG).warning(f"============【用户Query改写】结果过长({len(optimized)}字符)，疑似完整回答，使用原始问题============")
-                return ""
-            # 检测完整句子特征（句号、分号、换行、建议词等）
-            sentence_markers = ["。", "；", "：", "\n", "建议", "注意", "应该", "可以", "需要"]
-            if any(marker in optimized for marker in sentence_markers):
-                logger.bind(tag=TAG).warning(
-                    f"============【用户Query改写】结果疑似完整回答(含句子标记)，使用原始问题============\n"
-                    f"  改写结果: {optimized[:150]}"
-                )
-                return ""
-            logger.bind(tag=TAG).info(f"===========【用户Query改写成功】===========: 「{question}」 → 「{optimized}」")
-            return optimized
-        logger.bind(tag=TAG).warning(f"============【用户Query改写】结果为空，使用原始问题============")
-        return ""
+        # ===== 校验流水线 =====
+        # 1) 最短长度 4 字符（至少2个双字关键词）
+        if len(optimized) < 4:
+            logger.bind(tag=TAG).warning(f"===========用户Query改写 | 结果过短({len(optimized)}): '{optimized}'，降级原始问题")
+            return ""
+        # 2) 最长 50 字符（超出说明输出了完整句子/段落）
+        if len(optimized) > 50:
+            logger.bind(tag=TAG).warning(f"===========用户Query改写 | 结果过长({len(optimized)}字符)，疑似完整回答，降级原始问题")
+            return ""
+        # 3) 句子标记检测：句号/问号/感叹号/冒号 → 表明模型输出了完整句子而非关键词
+        #    （逗号、顿号、分号已在清洗阶段替换，无需在此拦截）
+        sentence_markers = ["。", "？", "！", "："]
+        if any(marker in optimized for marker in sentence_markers):
+            logger.bind(tag=TAG).warning(
+                f"===========用户Query改写 | 含完整句子标点，判定为回答文本，降级原始问题。片段: {optimized[:120]}"
+            )
+            return ""
+        return optimized
     except Exception as e:
-        logger.bind(tag=TAG).error(f"===========【用户Query改写调用失败】===========: {e}")
+        logger.bind(tag=TAG).error(f"===========用户Query改写 | 调用失败: {e}")
         return ""
 
+# 去除末尾标点
+def strip_end_punctuation(text: str) -> str:
+    import re
+    # 匹配末尾任意中英文标点，循环删除直到末尾无标点
+    # [\u3000-\u303F\uFF00-\uFF60\.,;:!?。，；：？！、] 覆盖绝大多数标点
+    pattern = r'[^\w\s]$'
+    while re.search(r'[\u3000-\u303F\uFF00-\uFF60\.,;:!?。，；：？！、]$', text):
+        text = text[:-1].strip()
+    return text
 
 def _strip_ragflow_markdown(text: str) -> str:
     """
@@ -645,7 +696,7 @@ def _call_medical_qwen(conn, question, knowledge_context):
 
     # 构建用户prompt：有知识库时附加上下文，无知识库时直接提问
     if knowledge_context:
-        user_prompt = f"""你是医疗查询优化助手，根据用户原始问题，扩充并完善下面的知识库检索资料，保留核心医学术语，补充专业同义词汇，使用口语化输出仅返回优化后的完整问题，无额外解释。【知识库检索资料】{knowledge_context}, 【用户原始问题】{question} """
+        user_prompt = f"""【知识库检索资料】{knowledge_context}, 【用户原始问题】{question} """
     else:
         user_prompt = question
 
