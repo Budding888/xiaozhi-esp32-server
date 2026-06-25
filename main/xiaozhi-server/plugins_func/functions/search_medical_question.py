@@ -67,10 +67,11 @@ medical_system_prompt = """你是腹透健康知识问答助手，基于知识�
 6. 直接回答用户问题，不要输出思考过程；
 7. 控制在600字以内；
 8. 用户均为腹膜透析患者；
-9. 使用简体中文。
+9. 回答完整通顺，无残缺短句；
+10. 使用简体中文。
 
 【结束标记】
-回答结束后，另起一行输出 ===END==="""
+回答结束后，另起一行输出 ----本次回答完成----"""
 
 
 
@@ -177,6 +178,8 @@ medical_replacements = {
     "不用去医院": "建议及时就医",
     "不用就医": "建议及时就医",
     "不用看医生": "建议及时咨询医生",
+    "不要遵医嘱": "建议及时咨询医生",
+    "不要遵循医嘱": "建议及时咨询医生",
     # ===== 感染与出口护理 =====
     "不用处理": "建议及时就医处理",
     "自己处理": "建议在医生指导下处理",
@@ -261,11 +264,13 @@ def _normal_medical_flow(conn, question):
     # ===== 阶段1：给用户确认回复 =====
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
     _send_progress_tts(conn, f"好的。")
-    _send_progress_tts(conn, f"正在查询关于{clean_question}的问题，请稍候。")
+    _send_progress_tts(conn, f"欢迎使用小乐音箱，很高兴为您提供知识问答。")
+    _send_progress_tts(conn, f"正在为您查询关于{clean_question}的问题，请稍候。")
 
     # ===== 阶段2：查询RAGFlow知识库（含Query改写、RAGFlow检索、知识压缩）=====
     _send_progress_tts(conn, "正在检索知识库。")
     knowledge_context = _query_knowledge_base(conn, question)
+    logger.bind(tag=TAG).info(f"===========RAGFlow检索结果【整理之后的】===========: 「{rag_result.result}」")
 
     # ===== 阶段3：告知用户准备输出结果 =====
     # 注意：此时才播报"已查询到结果"，确保不误导用户
@@ -415,7 +420,6 @@ def _query_knowledge_base(conn, question):
         # Step 1: 用改写后的query检索RAGFlow
         # 调用知识库插件进行检索
         rag_result = search_from_ragflow_v2(conn, question=search_query)
-        logger.bind(tag=TAG).info( f"===========RAGFlow检索【初步处理之后】的结果===========: 「{rag_result.result}」")
 
         if rag_result.action == Action.REQLLM and rag_result.result:
             raw_text = rag_result.result.strip()
@@ -428,7 +432,7 @@ def _query_knowledge_base(conn, question):
             compressed_rag_result = _compress_knowledge(conn, question, knowledge_text)
             if compressed_rag_result and compressed_rag_result != knowledge_text:
                 ratio = len(compressed_rag_result) / len(knowledge_text) * 100
-                logger.bind(tag=TAG).info(f"============知识库压缩完成: 从{len(knowledge_text)} 压缩到--→{len(compressed_rag_result)} 字符 "f"--→压缩率为：{ratio:.0f}%")
+                logger.bind(tag=TAG).info(f"============知识库压缩完成: 从{len(knowledge_text)} 压缩到--→{len(compressed_rag_result)} 字符 "f"，压缩率为：{ratio:.0f}%")
                 return compressed_rag_result
 
             # 压缩失败或未执行（内容不长），返回原始知识文本
@@ -711,10 +715,11 @@ def _call_medical_qwen(conn, question, knowledge_context):
         1. 逐条覆盖以上参考内容中的每一个要点，全部保留、不得遗漏；
         2. 用连贯的段落回答，确保每个要点都被自然提及；
         3. 全部要点覆盖完后，如果知识库不足以完全回答问题，补充你的医学知识；
-        4. 如果知识库已完整覆盖，则无需补充。
-        5. 回答结束后，另起一行输出 ===END==="""
+        4. 如果知识库已完整覆盖，则无需补充；
+        5. 回答完整通顺，无残缺短句；
+        6. 回答结束后，另起一行输出 ----本次回答完成回答完成----"""
     else:
-        user_prompt = f"""【患者问题】 {question} 回答结束后，另起一行输出 ===END==="""
+        user_prompt = f"""【患者问题】 {question} 回答结束后，另起一行输出 ----本次回答完成回答完成----"""
 
     try:
         # 构建对话消息列表，使用流式 response() 替代非流式 response_no_stream()
@@ -787,7 +792,7 @@ def _get_disclaimer_text() -> str:
         if disclaimer:
             return disclaimer.strip()
     # 默认值
-    return "温馨提示：以上内容仅供参考，不构成医疗诊断及治疗建议，不能替代专业诊疗，如有不适请及时就医并遵从专业医生指导。"
+    return "郑重申明：以上内容仅作为知识问答，不构成医疗诊断及治疗建议与参考，不能替代专业诊疗，如有不适请及时就医并遵从专业医生指导。"
 
 
 def _medical_verify(text):

@@ -256,43 +256,6 @@ def search_from_ragflow(conn: "ConnectionHandler", question=None):
 
 
 
-'''
-问题分析
-
-  原始参数中 top_k=100、similarity_threshold=0.25 导致 RAGFlow 返回大量低相关度 chunk，其中很多与问题无关。
-
-  优化项
-  
-  ┌──────────────┬──────┬──────────────────┬────────────────────────────────────────┐
-  │     优化     │ 旧值 │       新值       │                  作用                  │
-  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
-  │ top_k 上限   │ 100  │ min(配置值, 15)  │ 从源头减少无关结果数量                 │
-  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
-  │ 相似度阈值   │ 0.25 │ max(配置值, 0.3) │ 提高过滤门槛，只保留更相关的结果       │
-  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
-  │ 最短内容过滤 │ 无   │ < 10 字符丢弃    │ 过滤纯噪音片段                         │
-  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
-  │ 内容去重     │ 无   │ 前50字指纹去重   │ 去除内容高度重叠的多个 chunk           │
-  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
-  │ 最大输出控制 │ 无   │ 取 top 8 条      │ 控制最终输出量                         │
-  ├──────────────┼──────┼──────────────────┼────────────────────────────────────────┤
-  │ 总长度限制   │ 无   │ 3000 字符截断    │ 防止 MedicalQwen (2K上下文) token 超限 │
-  └──────────────┴──────┴──────────────────┴────────────────────────────────────────┘
-
-  过滤流水线
-
-  RAGFlow API 返回原始 chunks (最多15条)
-    → 相似度 ≥ 0.3 过滤
-    → 内容长度 ≥ 10 字符过滤
-    → 按相似度降序排列
-    → 内容指纹去重（前50字）
-    → 取 top 8
-    → 总长度 ≤ 3000 字符截断
-    → 返回给调用方
-'''
-
-
-
 @register_function(
     "search_from_ragflow_v2", SEARCH_FROM_RAGFLOW_FUNCTION_DESC, ToolType.SYSTEM_CTL
 )
@@ -309,11 +272,26 @@ def search_from_ragflow_v2(conn: "ConnectionHandler", question=None):
     api_key = ragflow_config.get("api_key", "")
     dataset_ids = ragflow_config.get("dataset_ids", [])
 
-    # ===== 检索参数优化：用更严格的默认值 =====
-    # 远程配置可能设得过于宽松（top_k=100, 阈值=0.25），服务端做安全兜底
-    top_k = min(int(ragflow_config.get("top_k", 100)), 15)           # 最多取15条，取配置与上限的较小值
-    similarity_threshold = max(float(ragflow_config.get("similarity_threshold", 0.25)), 0.3)  # 最低0.3
-    vector_similarity_weight = float(ragflow_config.get("vector_similarity_weight", 0.4))
+    # ===== 检索参数优化：线上生产标准配置（腹膜透析患者问诊，推荐） =====
+    # 1. 用 `vector_similarity_weight` 计算每一条知识库片段的**综合匹配分数**；
+    # 2. 根据分数从高到低排序，取出前 `top_k` 条作为候选集合；
+    # 3. 遍历候选集合，只保留综合分 ≥ `similarity_threshold` 的文档；
+    # 4. 剩余文档送入重排/LLM。
+
+    # top_k（粗召回条数）：向量库/索引库先根据综合得分，一次性取出分数最高的前 N 条作为候选池。只是控制最多取出几条。粗召回候选池12条，兼顾召回覆盖率与噪声控制
+    top_k = min(ragflow_config.get("top_k", 12), 12)
+
+    # similarity_threshold（综合分过滤阈值）：top_k 捞出一批候选后，用这条门槛过滤。只有 `综合得分 ≥ threshold` 的片段才保留，低分直接丢弃。综合分门槛0.6，过滤大部分弱相关片段
+    similarity_threshold = max(ragflow_config.get("similarity_threshold", 0.6), 0.5)
+
+    # vector_similarity_weight（打分权重系数）：提升语义权重，从根源减少“关键词碰瓷”的文档高分。
+    # 向量语义为主，关键词为辅，适配患者口语提问
+    #  整体作用：权重区间锁死在 [0.1, 0.9]：无论人为在配置里乱填多大 / 多小的数字，最终生效的 vector_similarity_weight 只会落在 0.1 ~ 0.9 之间：
+    # 上限 0.9：防止向量权重 100%，完全丢弃 BM25 关键词检索，丢失字面精准匹配能力；
+    # 下限 0.1：防止关键词权重 100%，完全丢弃语义向量，口语提问大量召回无关文档；
+    # 默认值 0.7：医疗口语问答场景最优预设。
+    vector_similarity_weight = max(0.1, min(0.9, float(ragflow_config.get("vector_similarity_weight", 0.7))))
+
     # 读取配置
     req_timeout = ragflow_config.get("request_timeout", (10, 50))
 
