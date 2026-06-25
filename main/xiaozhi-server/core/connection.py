@@ -1359,8 +1359,11 @@ class ConnectionHandler:
             medical_text = result.result.strip()
             # 记录医疗回答到对话
             self.dialogue.put(Message(role="assistant", content=medical_text))
-            # 注意：MedicalQwen 已在 _call_medical_qwen 中流式输出 TTS，
-            # 此处不重复播报，避免用户听到两遍回答
+            # V2 融合结果需要手动 TTS 播报
+            # （V2 的 _call_medical_qwen_v2_no_stream 不流式输出 TTS）
+            self.tts.tts_one_sentence(
+                self, ContentType.TEXT, content_detail=medical_text
+            )
         else:
             self.tts.tts_one_sentence(
                 self, ContentType.TEXT, content_detail="医疗系统繁忙，请稍后再试"

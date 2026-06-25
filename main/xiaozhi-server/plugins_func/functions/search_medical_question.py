@@ -13,7 +13,7 @@ RAGFlow知识库检索 → 医疗Qwen推理 → 内容安全校验 → 返回给
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
 from plugins_func.functions.search_from_ragflow import search_from_ragflow
 from plugins_func.functions.search_from_ragflow import search_from_ragflow_v2
-from plugins_func.functions.search_from_ragflow import search_from_ragflow_chat
+from plugins_func.functions.search_from_ragflow import ragflow_health_check
 from config.logger import setup_logging
 from typing import TYPE_CHECKING
 
@@ -69,10 +69,20 @@ medical_system_prompt = """你是腹透健康知识问答助手，基于知识�
 8. 用户均为腹膜透析患者；
 9. 回答完整通顺，无残缺短句；
 10. 使用简体中文。
+"""
 
-【结束标记】
-回答结束后，另起一行输出 ----本次回答完成----"""
 
+medical_system_prompt_v2 = (
+    "你是一名专业的医疗健康助手。\n"
+    "约束条件：\n"
+    "1. 直接回答用户问题，不要输出任何分析步骤或内部思考过程\n"
+    "2. 同一个问题中可能存在多个小问题，拆分后逐个回答\n"
+    "3. 用户均为腹膜透析患者\n"
+    "4. 回答要简洁、准确、直接、控制在600字以内\n"
+    "5. 不要给出重复的回答\n"
+    "6. 回答完整通顺，无残缺短句\n"
+    "7. 使用简体中文"
+)
 
 
 # Query改写prompt — 将口语化问题转为知识库检索友好的关键词形式
@@ -231,7 +241,7 @@ def search_medical_question(conn: "ConnectionHandler", question=None):
         ActionResponse: 正常返回REQLLM，降级返回RESPONSE
     """
     if not question:
-        return ActionResponse(Action.RESPONSE, None, "请告诉我您的医疗问题")
+        return ActionResponse(Action.RESPONSE, None, "请告诉我您的问题")
 
     logger.bind(tag=TAG).info(f"===========触发腹透患者医疗问答(search_medical_question)===========，问题: {question}")
 
@@ -242,20 +252,22 @@ def search_medical_question(conn: "ConnectionHandler", question=None):
     if medical_config:
         from core.providers.llm.medical_qwen.medical_qwen import LLMProvider
         qwen_healthy = LLMProvider.health_check(medical_config)
-        logger.bind(tag=TAG).info(f"===========MedicalQwen 健康检查结果: {'正常' if qwen_healthy else '【不可用，进入降级路径】'}")
+        logger.bind(tag=TAG).info(f"===========MedicalQwen 健康检查结果: {'【正常】' if qwen_healthy else '【不可用，进入降级路径】==========='}")
     else:
         qwen_healthy = False
         logger.bind(tag=TAG).warning("===========MedicalQwen未配置，【进入降级路径】===========")
 
+    # 降级处理（V2：知识库检索与医疗大模型推理并行）
     if qwen_healthy:
-        return _normal_medical_flow(conn, question)
+        return _medical_search_flow_v2(conn, question)
     else:
         return _fallback_medical_flow(conn, question)
 
 
-def _normal_medical_flow(conn, question):
+
+def _medical_search_flow(conn, question):
     """
-    正常医疗问答流水线（MedicalQwen 健康时走此路径）
+    集成医疗大模型方案2: 正常医疗问答流水线（MedicalQwen 健康时走此路径）
 
     流程：Query改写 → RAGFlow检索 → 知识压缩 → MedicalQwen推理 → 校验
     """
@@ -264,8 +276,8 @@ def _normal_medical_flow(conn, question):
     # ===== 阶段1：给用户确认回复 =====
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
     _send_progress_tts(conn, f"好的。")
-    _send_progress_tts(conn, f"欢迎使用小乐音箱，很高兴为您提供知识问答。")
-    _send_progress_tts(conn, f"正在为您查询关于{clean_question}的问题，请稍候。")
+    _send_progress_tts(conn, f"欢迎使用小乐音箱，很高兴为您服务。")
+    _send_progress_tts(conn, f"正在为您查询关于{clean_question}，请稍候。")
 
     # ===== 阶段2：查询RAGFlow知识库（含Query改写、RAGFlow检索、知识压缩）=====
     _send_progress_tts(conn, "正在检索知识库。")
@@ -290,6 +302,134 @@ def _normal_medical_flow(conn, question):
 
     # 返回给通用LLM做最终话术润色
     return ActionResponse(Action.REQLLM, medical_answer, None)
+
+
+
+def _medical_search_flow_v2(conn, question):
+    """
+    集成医疗大模型方案3: 正常医疗问答流水线 V2（知识库检索与医疗大模型推理异步并行）
+
+    流程：
+      Query改写 ─┬─→ 线程A: RAGFlow检索 + 通用LLM压缩 ──┐
+                 │                                        ├─→ 通用LLM融合 ─→ 校验 ─→ REQLLM
+                 └─→ 线程B: MedicalQwen推理（无KB） ─────┘
+
+    耗时对比：
+      V1（串行）: Query改写 + RAGFlow + 压缩 + MedicalQwen = ~78s
+      V2（并行）: Query改写 + max(RAGFlow, MedicalQwen) + 融合 = ~48s
+    """
+    import re
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
+    _send_progress_tts(conn, f"好的。")
+    _send_progress_tts(conn, f"欢迎使用小乐音箱，很高兴为您服务。")
+    _send_progress_tts(conn, f"正在为您查询关于{clean_question}，结果尽快为您呈现，请耐心等待。")
+
+    # ===== 阶段1：Query改写（顺序执行，快速）=====
+    _send_progress_tts(conn, "开始进行知识库和大模型检索。")
+    optimized_query = _optimize_rag_query(conn, question)
+    search_query = optimized_query or question
+    logger.bind(tag=TAG).info(f"===========用户query改写结果===========：{search_query}")
+
+    # ===== 阶段2：RAGFlow 健康检查 =====
+    # 只有 RAGFlow 健康时，才并行执行 RAGFlow 检索
+    # RAGFlow 不健康时，只执行 MedicalQwen 推理
+    ragflow_healthy = ragflow_health_check(conn)
+    logger.bind(tag=TAG).info(f"===========RAGFlow 健康检查结果: {'【正常】' if ragflow_healthy else '【不可用】，跳过知识库检索'}===========")
+
+    rag_result = None
+    medical_result = None
+
+    if ragflow_healthy:
+        # RAGFlow 健康：异步并行执行两条路径
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # 提交线程A：RAGFlow检索
+            future_rag = executor.submit(_parallel_rag_search, conn, search_query)
+            # 提交线程B：MedicalQwen推理（非流式）
+            future_medical = executor.submit(_call_medical_qwen_v2_no_stream, conn, question)
+
+        # 等待线程A完成
+        try:
+            _send_progress_tts(conn, "正在检索知识库。")
+            rag_result = future_rag.result()
+            if rag_result:
+                logger.bind(tag=TAG).info(f"===========RAGFlow检索结果===========：{rag_result}")
+        except Exception as e:
+            logger.bind(tag=TAG).error(f"===========并行RAGFlow失败===========: {e}")
+
+        # 等待线程B完成
+        try:
+            _send_progress_tts(conn, "正在检索大模型。")
+            medical_result = future_medical.result()
+            if medical_result:
+                logger.bind(tag=TAG).info(f"===========MedicalQwen检索结果===========：{medical_result}")
+        except Exception as e:
+            logger.bind(tag=TAG).error(f"===========并行MedicalQwen失败===========: {e}")
+
+    else:
+        # RAGFlow 不健康：只执行 MedicalQwen 推理
+        logger.bind(tag=TAG).info("RAGFlow 不可用，仅执行 MedicalQwen 推理")
+        _send_progress_tts(conn, "正在检索大模型。")
+        medical_result = _call_medical_qwen_v2_no_stream(conn, question)
+        if medical_result:
+            logger.bind(tag=TAG).info(f"===========MedicalQwen检索结果===========：{medical_result}")
+
+    # ===== 阶段3：通用LLM融合 =====
+    _send_progress_tts(conn, "正在为您整理相关检索结果，麻烦您稍等片刻哦。")
+
+    # 将检索结果与推理结果进行融合
+    merged_answer = _merge_rag_and_medical(conn, question, rag_result, medical_result)
+    logger.bind(tag=TAG).info(f"===========知识库结果 和 医疗大模型推理结果【融合成功】===========: {merged_answer}")
+    merged_answer = _strip_ragflow_markdown(merged_answer)
+    logger.bind(tag=TAG).info(f"===========清理RAGFlow返回结果中的markdown格式符号===========: {merged_answer}")
+
+    if merged_answer:
+        _send_progress_tts(conn, f"关于{question}，已为您查询到以下信息。")
+        return ActionResponse(Action.REQLLM, merged_answer, None)
+
+    # 融合失败时的降级：如果有单条结果，直接用
+    if medical_result:
+        logger.bind(tag=TAG).warning("===========知识库结果 和 医疗大模型推理结果【融合失败】，降级使用MedicalQwen结果===========")
+        return ActionResponse(Action.REQLLM, medical_result, None)
+
+    if rag_result:
+        logger.bind(tag=TAG).warning("===========知识库结果 和 医疗大模型推理结果【融合失败】，降级使用知识库结果===========")
+        return ActionResponse(Action.REQLLM, rag_result, None)
+
+    return ActionResponse(Action.RESPONSE, None, "医疗系统繁忙，请稍后再试")
+
+
+def _parallel_rag_search(conn, question):
+    """
+    供并行路径调用的知识库检索（不压缩，避免子线程访问通用LLM）
+
+    与 _query_knowledge_base 不同：
+    - 只做 RAGFlow 检索 + markdown 清理，不做通用 LLM 压缩
+    - 因为此函数在线程池中执行，通用 LLM 客户端非线程安全
+    - 原始文本由后续的通用 LLM 融合阶段统一处理
+
+    Args:
+        conn: 连接处理器
+        question: 改写后的检索query
+
+    Returns:
+        str: 知识库检索并清理后的文本，失败返回None
+    """
+    try:
+        from plugins_func.functions.search_from_ragflow import search_from_ragflow_v2
+        rag_result = search_from_ragflow_v2(conn, question=question)
+        if rag_result and rag_result.action == Action.REQLLM and rag_result.result:
+            raw_text = rag_result.result.strip()
+            knowledge_text = _strip_ragflow_markdown(raw_text)
+            if knowledge_text:
+                logger.bind(tag=TAG).info(f"并行Rag检索完成，长度: {len(knowledge_text)} 字符")
+                return knowledge_text
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"并行知识库检索失败: {e}")
+    return None
+
+
 
 
 def _fallback_medical_flow(conn, question):
@@ -522,8 +662,9 @@ def _get_medical_config():
 
 def _optimize_rag_query(conn, question):
     """
+    Rag检索词优化改写：
     将患者口语化问题改写为知识库检索友好的关键词形式
-    利用MedicalQwen将口语问题转为关键词组合，提升RAGFlow向量检索命中率。
+    使用通用LLM将口语问题转为关键词组合，提升RAGFlow向量检索命中率。
     清洗流水线：去引号 → 合并换行 → 中文分隔符→空格 → 长度校验 → 句子标记检测
     Args:
         conn: 连接处理器
@@ -560,33 +701,18 @@ def _optimize_rag_query(conn, question):
         配合后面代码 if len(optimized) > 50 二次校验，双重拦截超长文本；
         限制 token 同时减少推理耗时，提升接口响应速度。
     """
-    from core.utils import llm as llm_utils
-
-    medical_config = _get_medical_config()
-    if not medical_config:
-        logger.bind(tag=TAG).warning("MedicalQwen未配置，跳过Query改写")
-        return ""
-
-    try:
-        medical_llm = llm_utils.create_instance("medical_qwen", medical_config)
-    except Exception as e:
-        logger.bind(tag=TAG).error(f"创建MedicalQwen实例失败，跳过Query改写: {e}")
-        return ""
-
     query_user_input = f"患者问题：{question}\n优化后的查询："
     try:
-        optimized = medical_llm.response_no_stream(
+        optimized = conn.llm.response_no_stream(
             system_prompt=query_system_prompt,
             user_prompt=query_user_input,
-            # 控制大模型生成随机性、创造性
             temperature=0.2,
-            # 限制模型单次最多能生成多少个 token（文字片段），防止无限输出超长内容
-            max_tokens=128
+            max_tokens=128,
         )
-        logger.bind(tag=TAG).info(f"===========用户Query改写 | 原始问句:「{question}」→ 模型原始输出:「{optimized}」")
+        logger.bind(tag=TAG).info(f"===========Rag检索词优化改写 | 原始:「{question}」→ 模型输出:「{optimized}」===========")
 
         if not optimized:
-            logger.bind(tag=TAG).warning("===========用户Query改写 | 模型返回为空，降级原始问题")
+            logger.bind(tag=TAG).warning("===========Rag检索词优化改写 | 模型返回为空，降级原始问题===========")
             return ""
 
         # ===== 清洗流水线 =====
@@ -601,28 +727,28 @@ def _optimize_rag_query(conn, question):
         optimized = strip_end_punctuation(optimized)
         # Step 5: 合并连续空格
         optimized = " ".join(optimized.split())
-        logger.bind(tag=TAG).info(f"===========用户Query改写 | 清洗后:「{optimized}」(len={len(optimized)})")
+        logger.bind(tag=TAG).info(f"===========Rag检索词优化改写 | 清洗后:「{optimized}」(len={len(optimized)})===========")
 
         # ===== 校验流水线 =====
         # 1) 最短长度 4 字符（至少2个双字关键词）
         if len(optimized) < 4:
-            logger.bind(tag=TAG).warning(f"===========用户Query改写 | 结果过短({len(optimized)}): '{optimized}'，降级原始问题")
+            logger.bind(tag=TAG).warning(f"===========Rag检索词优化改写 | 结果过短({len(optimized)}): '{optimized}'，降级原始问题===========")
             return ""
         # 2) 最长 50 字符（超出说明输出了完整句子/段落）
         if len(optimized) > 50:
-            logger.bind(tag=TAG).warning(f"===========用户Query改写 | 结果过长({len(optimized)}字符)，疑似完整回答，降级原始问题")
+            logger.bind(tag=TAG).warning(f"===========Rag检索词优化改写 | 结果过长({len(optimized)}字符)，疑似完整回答，降级原始问题===========")
             return ""
         # 3) 句子标记检测：句号/问号/感叹号/冒号 → 表明模型输出了完整句子而非关键词
         #    （逗号、顿号、分号已在清洗阶段替换，无需在此拦截）
         sentence_markers = ["。", "？", "！", "："]
         if any(marker in optimized for marker in sentence_markers):
             logger.bind(tag=TAG).warning(
-                f"===========用户Query改写 | 含完整句子标点，判定为回答文本，降级原始问题。片段: {optimized[:120]}"
+                f"===========Rag检索词优化改写 | 含句子标点，判定为回答文本，降级原始问题。片段: {optimized[:120]}==========="
             )
             return ""
         return optimized
     except Exception as e:
-        logger.bind(tag=TAG).error(f"===========用户Query改写 | 调用失败: {e}")
+        logger.bind(tag=TAG).error(f"===========Rag检索词优化改写 | 调用失败: {e}===========")
         return ""
 
 # 去除末尾标点
@@ -634,6 +760,7 @@ def strip_end_punctuation(text: str) -> str:
     while re.search(r'[\u3000-\u303F\uFF00-\uFF60\.,;:!?。，；：？！、]$', text):
         text = text[:-1].strip()
     return text
+
 
 def _strip_ragflow_markdown(text: str) -> str:
     """
@@ -654,7 +781,7 @@ def _strip_ragflow_markdown(text: str) -> str:
     import re
 
     # 去掉开头的 "# 关于问题..." 标题行
-    text = re.sub(r"^#\s*关于问题.*?如下\s*\n?", "", text)
+    # text = re.sub(r"^#\s*关于问题.*?如下\s*\n?", "", text)
 
     # 去掉 ``` 代码块标记
     text = text.replace("```", "")
@@ -673,7 +800,7 @@ def _strip_ragflow_markdown(text: str) -> str:
 
 def _call_medical_qwen(conn, question, knowledge_context):
     """
-    调用医疗Qwen LLM进行推理
+    调用医疗Qwen LLM进行推理【给医疗大模型投喂原始问题，同时投喂知识库检索结果作为参考】
 
     通过项目工厂模式创建MedicalQwen Provider实例，
     将知识库上下文和患者问题构造为Prompt后请求医疗Qwen生成回答。
@@ -716,8 +843,7 @@ def _call_medical_qwen(conn, question, knowledge_context):
         2. 用连贯的段落回答，确保每个要点都被自然提及；
         3. 全部要点覆盖完后，如果知识库不足以完全回答问题，补充你的医学知识；
         4. 如果知识库已完整覆盖，则无需补充；
-        5. 回答完整通顺，无残缺短句；
-        6. 回答结束后，另起一行输出 ----本次回答完成回答完成----"""
+        5. 回答完整通顺，无残缺短句；"""
     else:
         user_prompt = f"""【患者问题】 {question} 回答结束后，另起一行输出 ----本次回答完成回答完成----"""
 
@@ -755,6 +881,174 @@ def _call_medical_qwen(conn, question, knowledge_context):
 
     except Exception as e:
         logger.bind(tag=TAG).error(f"===========MedicalQwen=========== 调用失败: {e}")
+        return None
+
+
+def _call_medical_qwen_v2(conn, question):
+    """
+    调用医疗Qwen LLM进行推理【仅仅给医疗大模型投喂原始问题，不投喂知识库检索结果作为参考】
+
+    通过项目工厂模式创建MedicalQwen Provider实例，
+    将知识库上下文和患者问题构造为Prompt后请求医疗Qwen生成回答。
+
+    Args:
+        conn: 连接处理器
+        question: 患者问题
+
+    Returns:
+        str: 医疗Qwen生成的回答文本，失败时返回None
+    """
+    from core.utils import llm as llm_utils
+    from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
+
+    # 使用共享函数读取MedicalQwen配置，避免重复读取逻辑
+    medical_config = _get_medical_config()
+    if not medical_config:
+        logger.bind(tag=TAG).error("============config.yaml 中未找到 MedicalQwen 配置============")
+        return None
+    logger.bind(tag=TAG).info(f"从 config.yaml 读取 MedicalQwen 配置: {medical_config.get('base_url')}")
+    logger.bind(tag=TAG).info(f"============【调用医疗LLM进行推理】medical_config============: {medical_config}")
+
+    try:
+        medical_llm = llm_utils.create_instance("medical_qwen", medical_config)
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"创建 MedicalQwen 实例失败: {e}")
+        return None
+
+    # 构建用户prompt：要求逐条覆盖知识库全部要点，段落输出，加结束标记
+    user_prompt = f"""【患者问题】{question}"""
+
+    try:
+        # 构建对话消息列表，使用流式 response() 替代非流式 response_no_stream()
+        dialogue = [
+            {"role": "system", "content": medical_system_prompt_v2},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        full_answer = ""
+        for chunk in medical_llm.response("", dialogue):
+            if not chunk:
+                continue
+            full_answer += chunk
+            # 流式输出：每个 token 块实时送入 TTS 队列
+            try:
+                conn.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=conn.sentence_id,
+                        sentence_type=SentenceType.MIDDLE,
+                        content_type=ContentType.TEXT,
+                        content_detail=chunk,
+                    )
+                )
+            except Exception:
+                pass
+
+        if full_answer:
+            # 只做禁忌词替换，不追加免责声明（免责声明由调用方以独立 TTS 消息发送，带停顿）
+            verified = _medical_verify(full_answer.strip())
+            return verified
+        logger.bind(tag=TAG).warning("===========MedicalQwen=========== 返回空内容")
+        return None
+
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"===========MedicalQwen=========== 调用失败: {e}")
+        return None
+
+
+def _call_medical_qwen_v2_no_stream(conn, question):
+    """
+    调用医疗Qwen LLM进行推理【非流式版本，供并行调用，不输出TTS】
+
+    使用 response_no_stream 直接获取完整回答，避免流式生成器开销。
+    用于并行路径中，最终由通用LLM统一融合输出。
+
+    Args:
+        conn: 连接处理器（仅用于日志）
+        question: 患者问题
+
+    Returns:
+        str: 医疗Qwen生成的回答文本，失败时返回None
+    """
+    from core.utils import llm as llm_utils
+
+    medical_config = _get_medical_config()
+    if not medical_config:
+        logger.bind(tag=TAG).error("config.yaml 中未找到 MedicalQwen 配置")
+        return None
+
+    try:
+        medical_llm = llm_utils.create_instance("medical_qwen", medical_config)
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"创建 MedicalQwen 实例失败: {e}")
+        return None
+
+    try:
+        # 使用非流式接口直接获取完整回答，避免流式生成器开销
+        full_answer = medical_llm.response_no_stream(
+            system_prompt=medical_system_prompt_v2,
+            user_prompt=f"【患者问题】{question}",
+        )
+
+        if full_answer and len(full_answer.strip()) >= 5:
+            verified = _medical_verify(full_answer.strip())
+            logger.bind(tag=TAG).info(f"MedicalQwen v2 no_stream 完成，长度: {len(verified)} 字符")
+            return verified
+        logger.bind(tag=TAG).warning(f"MedicalQwen v2 no_stream 返回空或过短")
+        return None
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"MedicalQwen v2 no_stream 调用失败: {type(e).__name__}: {e}")
+        return None
+
+
+def _merge_rag_and_medical(conn, question, kb_text, medical_text):
+    """
+    用通用LLM融合知识库检索结果和医疗大模型推理结果
+
+    以患者原始问题为中心，将两条信息源合并为完整、有条理的回答。
+    - 只有一条信息源时直接返回（跳过LLM调用节省时间）
+    - 两条都有时用LLM融合
+
+    Args:
+        conn: 连接处理器
+        question: 患者原始问题
+        kb_text: 知识库检索结果（可能为空）
+        medical_text: 医疗大模型推理结果（可能为空）
+
+    Returns:
+        str: 融合后的回答文本，失败时返回None
+    """
+    logger.bind(tag=TAG).info(f"===========融合知识库结果 和 医疗大模型推理结果===========用户原始问题: {question}")
+    logger.bind(tag=TAG).info(f"===========融合知识库结果 和 医疗大模型推理结果===========知识库文本: {kb_text}")
+    logger.bind(tag=TAG).info(f"===========融合知识库结果 和 医疗大模型推理结果===========医疗大模型文本: {medical_text}")
+
+    system_prompt = (
+        "你是腹透健康助手，融合两条信息源回答。\n"
+        "要求：\n"
+        "1. 以问题为中心，综合知识库和医疗模型的信息；\n"
+        "2. 内容一致则合并，互补则综合，冲突以知识库为准；\n"
+        "3. 分点回答（1. 2. 3.），口语表达；\n"
+        "4. 使用简体中文输出，控制在600字以内。"
+    )
+    user_prompt = (
+        f"【问题】{question}\n"
+        f"【知识库】{kb_text}\n"
+        f"【医疗模型】{medical_text}\n"
+        f"融合以上信息回答患者问题。"
+    )
+
+    try:
+        merged = conn.llm.response_no_stream(
+            system_prompt,
+            user_prompt,
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        if merged and len(merged.strip()) > 20:
+            return merged.strip()
+        logger.bind(tag=TAG).warning("融合结果空或过短")
+        return None
+    except Exception as e:
+        logger.bind(tag=TAG).error(f"融合失败: {e}")
         return None
 
 

@@ -153,7 +153,11 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
             is_error = ("医疗系统繁忙" in output or "请稍后再试" in output or not output)
         elif result.action == Action.REQLLM and result.result:
             output = result.result.strip()
-            # REQLLM 类型：MedicalQwen 已经在 _call_medical_qwen 中流式输出了 TTS，不重复播报
+            # REQLLM类型：手动 TTS 播报 知识库与医疗大模型的融合结果
+            # V2 的 _call_medical_qwen_v2_no_stream 不流式输出 TTS，融合后的答案需要通过此处播报
+            conn.tts.tts_one_sentence(
+                conn, ContentType.TEXT, content_detail=output
+            )
             is_error = False
 
     # LAST 标记：结束 TTS 处理

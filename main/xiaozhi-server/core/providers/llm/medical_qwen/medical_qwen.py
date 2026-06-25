@@ -145,7 +145,7 @@ class LLMProvider(LLMProviderBase):
             resp = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=dialogue,
-                temperature=kwargs.get("temperature", 0.45),
+                temperature=kwargs.get("temperature", 0.35),
                 max_tokens=kwargs.get("max_tokens", 1024),
                 top_p=kwargs.get("top_p", 0.9),
                 stream=False,

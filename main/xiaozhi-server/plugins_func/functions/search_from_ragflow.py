@@ -106,6 +106,10 @@ def _call_ragflow_with_retry(url, headers, payload, timeout, max_retries=2, retr
     raise last_exception
 
 
+
+'''
+  配合意图识别，直接查询知识库
+'''
 @register_function(
     "search_from_ragflow", SEARCH_FROM_RAGFLOW_FUNCTION_DESC, ToolType.SYSTEM_CTL
 )
@@ -122,10 +126,27 @@ def search_from_ragflow(conn: "ConnectionHandler", question=None):
     api_key = ragflow_config.get("api_key", "")
     dataset_ids = ragflow_config.get("dataset_ids", [])
     # 读取检索参数
-    top_k = ragflow_config.get("top_k", 100)
-    similarity_threshold = ragflow_config.get("similarity_threshold", 0.25)
-    vector_similarity_weight = ragflow_config.get("vector_similarity_weight", 0.4)
-    # 读取配置：8s建立连接，25s读取完整响应
+    # ===== 检索参数优化：线上生产标准配置（腹膜透析患者问诊，推荐） =====
+    # 1. 用 `vector_similarity_weight` 计算每一条知识库片段的**综合匹配分数**；
+    # 2. 根据分数从高到低排序，取出前 `top_k` 条作为候选集合；
+    # 3. 遍历候选集合，只保留综合分 ≥ `similarity_threshold` 的文档；
+    # 4. 剩余文档送入重排/LLM。
+
+    # top_k（粗召回条数）：向量库/索引库先根据综合得分，一次性取出分数最高的前 N 条作为候选池。只是控制最多取出几条。粗召回候选池12条，兼顾召回覆盖率与噪声控制
+    top_k = min(ragflow_config.get("top_k", 12), 12)
+
+    # similarity_threshold（综合分过滤阈值）：top_k 捞出一批候选后，用这条门槛过滤。只有 `综合得分 ≥ threshold` 的片段才保留，低分直接丢弃。综合分门槛0.6，过滤大部分弱相关片段
+    similarity_threshold = max(ragflow_config.get("similarity_threshold", 0.6), 0.5)
+
+    # vector_similarity_weight（打分权重系数）：提升语义权重，从根源减少“关键词碰瓷”的文档高分。
+    # 向量语义为主，关键词为辅，适配患者口语提问
+    #  整体作用：权重区间锁死在 [0.1, 0.9]：无论人为在配置里乱填多大 / 多小的数字，最终生效的 vector_similarity_weight 只会落在 0.1 ~ 0.9 之间：
+    # 上限 0.9：防止向量权重 100%，完全丢弃 BM25 关键词检索，丢失字面精准匹配能力；
+    # 下限 0.1：防止关键词权重 100%，完全丢弃语义向量，口语提问大量召回无关文档；
+    # 默认值 0.7：医疗口语问答场景最优预设。
+    vector_similarity_weight = max(0.1, min(0.9, float(ragflow_config.get("vector_similarity_weight", 0.7))))
+
+    # 读取配置
     req_timeout = ragflow_config.get("request_timeout", (10, 50))
 
     url = base_url + "/api/v1/retrieval"
@@ -255,7 +276,9 @@ def search_from_ragflow(conn: "ConnectionHandler", question=None):
 
 
 
-
+'''
+ 调用知识库插件进行检索。配合医疗大模型使用
+'''
 @register_function(
     "search_from_ragflow_v2", SEARCH_FROM_RAGFLOW_FUNCTION_DESC, ToolType.SYSTEM_CTL
 )
@@ -670,3 +693,53 @@ def search_from_ragflow_chat(conn: "ConnectionHandler", question=None, stream=Tr
         return ActionResponse(
             Action.RESPONSE, None, f"知识库处理异常：{str(e)[:50]}"
         )
+
+
+
+def ragflow_health_check(conn: "ConnectionHandler"):
+    """
+        RAGFlow 健康检查
+
+        向 RAGFlow API 发送 GET 请求检测服务是否存活。
+        超时 10 秒，避免阻塞主流程。
+
+        Returns:
+            bool: True=服务正常, False=不可用
+        """
+    # 读取配置
+    ragflow_config = conn.config.get("plugins", {}).get("search_from_ragflow", {})
+    base_url = ragflow_config.get("base_url", "")
+    if not base_url:
+        logger.bind(tag=TAG).error("RAGFlow Chat 配置不完整：缺少 base_url 或 api_key")
+        return False
+
+    url = base_url + "/api/v1/system/healthz"
+    headers = { "Content-Type": "application/json",}
+
+    try:
+        # 调用RagFlow的健康检查接口
+        response = requests.get(
+            url=url,
+            headers=headers,
+            timeout=5,
+            verify=False,
+        )
+
+        # 显式设置响应的编码为utf-8
+        response.encoding = "utf-8"
+
+        response.raise_for_status()
+
+        # 先获取文本内容，然后手动处理JSON解码
+        response_text = response.text
+        import json
+        result = json.loads(response_text)
+        if response.status_code == 200 and result.get("status") == "ok":
+            logger.bind(tag=TAG).error(f"===========RAGFlow服务健康检查【通过】===========")
+            return True
+        else:
+            logger.bind(tag=TAG).error(f"===========RAGFlow服务健康检查【失败】===========")
+            return False
+    except Exception as e:
+        error_type = type(e).__name__
+        logger.bind(tag=TAG).error(f"RAGFlow服务健康检查异常，异常类型：{error_type}，详情：{str(e)}")
