@@ -22,7 +22,10 @@
       "Bash(taskkill -f -pid 10400)",
       "Bash(taskkill -f -pid 29056)",
       "Bash(awk '/MEDICAL_REPLACEMENTS/,/^}/' plugins_func/functions/search_medical_question.py)",
-      "Bash(awk '/# ===== /{c=$0} /\": \"/{split\\(c,a,\"# \"\\); print a[2]\": \"NR\"条\"}' plugins_func/functions/search_medical_question.py)"
+      "Bash(awk '/# ===== /{c=$0} /\": \"/{split\\(c,a,\"# \"\\); print a[2]\": \"NR\"条\"}' plugins_func/functions/search_medical_question.py)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:doc.agentscope.io)"
     ],
     "deny": [],
     "ask": []
