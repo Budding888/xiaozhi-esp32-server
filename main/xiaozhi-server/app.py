@@ -1,3 +1,4 @@
+import os
 import sys
 import uuid
 import signal
@@ -10,6 +11,87 @@ from core.http_server import SimpleHttpServer
 from core.websocket_server import WebSocketServer
 from core.utils.util import check_ffmpeg_installed
 from core.utils.gc_manager import get_gc_manager
+from config.config_loader import get_project_dir
+
+# AgentScope 多智能体配置日志
+_AGENTSCOPE_LOG_TEMPLATE = """
+╔══════════════════════════════════════════════════════════╗
+║              AgentScope 多智能体配置                     ║
+╠══════════════════════════════════════════════════════════╣
+║  模式:       {mode:<20}                        ║
+║  启用状态:   {enabled:<21}                       ║
+║  启用场景:   {scenes:<21}                       ║
+╠──────────────────────────────────────────────────────────╣
+║  管道:       {pipeline:<21}                       ║
+║  Stages:     {stages:<21}                       ║
+║  超时:       {timeout:<21}                       ║
+║  降级策略:   {fallback:<21}                       ║
+╠──────────────────────────────────────────────────────────╣
+║  模型缓存:   {cache:<21}                       ║
+║  缓存 TTL:   {cache_ttl:<21}                       ║
+╚══════════════════════════════════════════════════════════╝"""
+
+
+import yaml
+
+
+def _read_agentscope_config() -> dict:
+    """直接从 config.yaml 读取 agentscope 配置段，不依赖 config loader 合并结果"""
+    try:
+        config_path = os.path.join(get_project_dir(), "config.yaml")
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = yaml.safe_load(f)
+        return raw.get("agentscope", {})
+    except Exception:
+        return {}
+
+
+def _log_agentscope_config(config: dict) -> None:
+    """
+    打印 AgentScope 多智能体配置信息。
+
+    优先使用 load_config() 合并/API 返回中的 agentscope 段，
+    若不存在则回退到直接从 config.yaml 读取（API 远程配置可能不含该段）。
+    """
+    ascope = config.get("agentscope", {}) or _read_agentscope_config()
+    pipelines = ascope.get("pipelines", {})
+    model_wrapper = ascope.get("model_wrapper", {})
+
+    # 获取第一个管道的配置信息（如果有）
+    pipeline_name = "—"
+    pipeline_stages = "—"
+    pipeline_timeout = "—"
+    pipeline_fallback = "—"
+    if pipelines:
+        first_name = next(iter(pipelines))
+        pipeline_name = first_name
+        pipe = pipelines[first_name]
+        stages = pipe.get("stages", [])
+        pipeline_stages = ", ".join(
+            list({next(iter(s.keys())) for s in stages})[:5]
+        ) or "—"
+        pipeline_timeout = str(pipe.get("timeout", "—"))
+        pipeline_fallback = pipe.get("fallback", "—")
+
+    cache_enabled = model_wrapper.get("cache_enabled", False)
+    cache_ttl = model_wrapper.get("cache_ttl", "—")
+
+    scenes = ascope.get("enabled_scenes", [])
+    scenes_str = ", ".join(scenes) if scenes else "—"
+
+    logger.bind(tag=TAG).info(
+        _AGENTSCOPE_LOG_TEMPLATE.format(
+            mode=ascope.get("mode", "legacy"),
+            enabled=str(ascope.get("enabled", False)),
+            scenes=scenes_str,
+            pipeline=pipeline_name,
+            stages=pipeline_stages[:21],
+            timeout=pipeline_timeout,
+            fallback=pipeline_fallback,
+            cache=str(cache_enabled),
+            cache_ttl=str(cache_ttl),
+        )
+    )
 
 TAG = __name__
 logger = setup_logging()
@@ -46,6 +128,9 @@ async def monitor_stdin():
 async def main():
     check_ffmpeg_installed()
     config = load_config()
+
+    # 打印 AgentScope 多智能体配置信息
+    _log_agentscope_config(config)
 
     # auth_key优先级：配置文件server.auth_key > manager-api.secret > 自动生成
     # auth_key用于jwt认证，比如视觉分析接口的jwt认证、ota接口的token生成与websocket认证
@@ -119,7 +204,7 @@ async def main():
         "如想测试websocket请用谷歌浏览器打开test目录下的test_page.html"
     )
     logger.bind(tag=TAG).info(
-        "=============================================================\n"
+        "=============================【服务启动完成】================================\n"
     )
 
     try:

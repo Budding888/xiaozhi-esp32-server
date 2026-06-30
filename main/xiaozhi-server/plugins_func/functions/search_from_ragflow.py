@@ -735,7 +735,7 @@ def ragflow_health_check(conn: "ConnectionHandler"):
         import json
         result = json.loads(response_text)
         if response.status_code == 200 and result.get("status") == "ok":
-            logger.bind(tag=TAG).error(f"===========RAGFlow服务健康检查【通过】===========")
+            logger.bind(tag=TAG).info(f"===========RAGFlow服务健康检查【通过】===========")
             return True
         else:
             logger.bind(tag=TAG).error(f"===========RAGFlow服务健康检查【失败】===========")

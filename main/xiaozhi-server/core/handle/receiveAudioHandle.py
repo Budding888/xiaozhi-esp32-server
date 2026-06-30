@@ -115,13 +115,26 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
 
     被医疗入口预过滤器调用，完全绕过 LLM function_call 决策。
     TTS 内容输出由 search_medical_question 内部处理（RAGFlow 路径直接送入、MedicalQwen 路径流式送入）。
+
+    支持 AgentScope 模式：当 conn.agent_mode == "agentscope" 时，
+    使用 AgentScope 版医疗管道 _agentscope_chat()。
     """
     from plugins_func.functions.search_medical_question import search_medical_question, _send_disclaimer_tts
+    from plugins_func.functions.search_medical_question import STREAMING_DONE_MARKER
     from plugins_func.register import Action
     from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
     from core.utils.dialogue import Message
 
     conn.logger.bind(tag=TAG).info(f"===========直接执行医疗问答并输出语音===========: {text}")
+
+    # AgentScope 模式：使用新管道
+    if getattr(conn, "agent_mode", "legacy") == "agentscope":
+        conn.logger.bind(tag=TAG).info(
+            f"===========[AgentScope] _direct_medical_and_speak 路由到 _agentscope_chat==========="
+        )
+        conn.sentence_id = conn.sentence_id or str(uuid.uuid4().hex)
+        conn._agentscope_chat(text)
+        return
 
     # FIRST 标记：启动 TTS 处理
     conn.tts.tts_text_queue.put(
@@ -145,12 +158,17 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
     if result:
         if result.action == Action.RESPONSE:
             output = result.response or result.result or output
-            # RESPONSE 类型：降级路径或错误消息，需要手动 TTS 播报
-            conn.tts.tts_one_sentence(
-                conn, ContentType.TEXT, content_detail=output
-            )
-            # 判断是否为真正的错误消息（非降级成功）
-            is_error = ("医疗系统繁忙" in output or "请稍后再试" in output or not output)
+            # 检测流式融合标记：TTS 已在流式过程中完成，仅用于对话记录
+            if result.response == STREAMING_DONE_MARKER:
+                output = result.result or output
+                is_error = (not output or "医疗系统繁忙" in output)
+            else:
+                # RESPONSE 类型：降级路径或错误消息，需要手动 TTS 播报
+                conn.tts.tts_one_sentence(
+                    conn, ContentType.TEXT, content_detail=output
+                )
+                # 判断是否为真正的错误消息（非降级成功）
+                is_error = ("医疗系统繁忙" in output or "请稍后再试" in output or not output)
         elif result.action == Action.REQLLM and result.result:
             output = result.result.strip()
             # REQLLM类型：手动 TTS 播报 知识库与医疗大模型的融合结果
@@ -176,7 +194,7 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
     # 记录对话
     conn.tts_MessageText = output
     conn.dialogue.put(Message(role="assistant", content=output))
-    conn.logger.bind(tag=TAG).info(f"===========医疗问答语音输出完成(is_error={is_error})===========")
+
 
 
 async def no_voice_close_connect(conn: "ConnectionHandler", have_voice):

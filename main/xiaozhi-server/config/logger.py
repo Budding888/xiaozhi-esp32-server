@@ -86,7 +86,7 @@ def setup_logging():
         # 输出到控制台
         logger.add(sys.stdout, format=log_format, level=log_level, filter=formatter)
 
-        # 输出到文件 - 统一目录，按大小轮转
+        # 输出到文件 - 每天一份日志
         # 日志文件完整路径
         log_file_path = os.path.join(log_dir, log_file)
 
@@ -96,7 +96,7 @@ def setup_logging():
             format=log_format_file,
             level=log_level,
             filter=formatter,
-            rotation="10 MB",  # 每个文件最大10MB
+            rotation="1 day",     # 每天一份日志
             retention="30 days",  # 保留30天
             compression=None,
             encoding="utf-8",

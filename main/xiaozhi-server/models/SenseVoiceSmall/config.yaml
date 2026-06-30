@@ -25,7 +25,7 @@ model_conf:
 
 tokenizer: SentencepiecesTokenizer
 tokenizer_conf:
-  bpemodel: null
+  bpemodel: models/SenseVoiceSmall/chn_jpn_yue_eng_ko_spectok.bpe.model
   unk_symbol: <unk>
   split_with_space: true
 

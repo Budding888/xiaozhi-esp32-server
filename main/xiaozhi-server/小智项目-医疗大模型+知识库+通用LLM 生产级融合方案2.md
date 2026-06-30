@@ -1003,6 +1003,8 @@ agentscope>=2.0.0
 
 说明: 仅增加1个主依赖+其传递依赖。不引入 FAISS/SentenceTransformer/Redis/OpenTelemetry（按需后续引入）。
 
+⚠️ **版本说明**: 当前已验证版本为 `agentscope==2.0.2`（需 Python >= 3.11）。
+
 ### C. 关键架构决策记录 (ADR)
 
 **ADR-001: 方案A (Adapter/Wrapper) 为首选整合方案**

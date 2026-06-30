@@ -187,6 +187,11 @@ class ConnectionHandler:
         self.iot_descriptors = {}
         self.func_handler = None
 
+        # AgentScope 模式标志
+        self.agent_mode = config.get("selected_module", {}).get("AgentMode", "legacy")
+        self.agentscope_initialized = False
+        self.agentscope_pipeline = None
+
         self.cmd_exit = self.config["exit_commands"]
 
         # 是否在聊天结束后关闭连接
@@ -949,6 +954,12 @@ class ConnectionHandler:
                 self.logger.bind(tag=TAG).info(
                     f"医疗预过滤器命中，直接路由到 search_medical_question: {query}"
                 )
+                # AgentScope 模式走新管道，否则走现有逻辑
+                if self.agent_mode == "agentscope":
+                    self.logger.bind(tag=TAG).info(
+                        f"AgentScope 模式: 使用 agentscope_medical_flow"
+                    )
+                    return self._agentscope_chat(query)
                 return self._direct_medical_chat(query)
 
         response_message = []
@@ -1189,6 +1200,89 @@ class ConnectionHandler:
 
         return True
 
+    def _agentscope_chat(self, query: str) -> bool:
+        """
+        使用 AgentScope 管道处理医疗问题。
+
+        当 agent_mode == "agentscope" 时，取代 _direct_medical_chat。
+        调用 AgentScope 编排的医疗管道执行问答流程。
+        任何异常自动降级到 legacy 模式（_direct_medical_chat）。
+
+        Args:
+            query: 用户输入的医疗问题
+
+        Returns:
+            bool: 处理成功返回 True
+        """
+        try:
+            from core.agents.medical_pipeline import agentscope_medical_flow
+
+            self.logger.bind(tag=TAG).info(
+                f"[AgentScope] _agentscope_chat 启动: {query[:80]}"
+            )
+
+            # FIRST 标记：启动 TTS 流
+            self.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=self.sentence_id,
+                    sentence_type=SentenceType.FIRST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+
+            # 执行 AgentScope 医疗管道
+            answer = agentscope_medical_flow(self, query)
+
+            if answer:
+                # 记录回答到对话
+                self.dialogue.put(Message(role="assistant", content=answer))
+
+                # 如果流式融合已内部逐句推送 TTS，跳过重复播报
+                if not getattr(self, '_streaming_tts_done', False):
+                    # TTS 播报 (agentscope_medical_flow 内部已有进度播报，
+                    # 但最终结果还需输出)
+                    self.tts.tts_one_sentence(
+                        self, ContentType.TEXT, content_detail=answer
+                    )
+
+                # 发送免责声明
+                try:
+                    from plugins_func.functions.search_medical_question import (
+                        _send_disclaimer_tts,
+                    )
+                    _send_disclaimer_tts(self)
+                except Exception:
+                    pass
+
+                # LAST 标记
+                self.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=self.sentence_id,
+                        sentence_type=SentenceType.LAST,
+                        content_type=ContentType.ACTION,
+                    )
+                )
+                self.logger.bind(tag=TAG).info(
+                    f"[AgentScope] 医疗管道完成 ✅"
+                )
+                return True
+            else:
+                self.logger.bind(tag=TAG).warning(
+                    "[AgentScope] 医疗管道返回空结果，降级到 legacy 模式"
+                )
+
+        except ImportError as e:
+            self.logger.bind(tag=TAG).error(
+                f"[AgentScope] 模块导入失败: {e}，降级到 legacy 模式"
+            )
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(
+                f"[AgentScope] 管道异常: {e}，降级到 legacy 模式"
+            )
+
+        # 降级到 legacy 模式
+        return self._direct_medical_chat(query)
+
     def _get_tool_summary(self, functions: list) -> str:
         """
         从工具定义中提取摘要，用于规则强化注入
@@ -1214,13 +1308,8 @@ class ConnectionHandler:
         """
         通过关键词匹配检测是否为腹透医疗问题
 
-        当用户问题命中以下关键词时，判定为医疗问题，
-        将触发强制路由到 search_medical_question 工具。
-
-        注意：在医疗关键词匹配之前，先执行排除逻辑：
-        - 体征数据上报/记录/查询（如"上报血压150/90"）→ 不走医疗通道
-        - 服药提醒更新（如"更新服药提醒"）→ 不走医疗通道
-        - 显式要求从知识库查询（如"从知识库查询"）→ 不走医疗通道
+        核心逻辑已抽取到 core/agentscope/config/medical_keywords.py，
+        此处作为 facade 保持调用兼容。
 
         Args:
             query: 用户输入文本
@@ -1228,81 +1317,8 @@ class ConnectionHandler:
         Returns:
             bool: 是否为医疗问题
         """
-        if not query:
-            return False
-
-        # ================================================================
-        # 排除模式1：体征数据上报/记录/查询
-        # 当查询同时包含体征测量词和上报操作词时，判定为数据上报意图
-        # 应由通用LLM的function_call路由到对应插件（submit_xxx_data等）
-        # ================================================================
-        REPORTING_VERBS = {"上报", "提交", "登记", "报上去", "上交", "提交一下", "上报一下", "帮我提交", "帮我上报", "反馈一下",
-                           "记录", "录入", "保存", "记下来", "存一下", "帮我记下", "录入进去", "保存一下",
-                           "查询", "查一下", "查查", "检索", "查阅", "调取", "询查", "核验", "核对", "浏览", "查一查", "看一看", "找一找", "帮我查下", "翻一下", "搜一下", "看下记录",
-                           }
-        MEASUREMENT_NOUNS = {"血压", "血糖", "体重", "尿量", "心率", "高压", "低压", "收缩压", "舒张压",}
-
-        has_reporting_verb = any(v in query for v in REPORTING_VERBS)
-        has_measurement = any(n in query for n in MEASUREMENT_NOUNS)
-
-        if has_reporting_verb and has_measurement:
-            self.logger.bind(tag=TAG).info(f"医疗预过滤器排除（体征数据上报/查询）: {query[:50]}")
-            return False
-
-        # ================================================================
-        # 排除模式2：服药提醒更新
-        # 如"更新服药提醒"、"帮我更新一下用药提醒"
-        # 应由通用LLM的function_call路由到 update_medication_reminder_status
-        # ================================================================
-        if "更新" in query and ("提醒" in query or "服药" in query or "用药提醒" in query):
-            self.logger.bind(tag=TAG).info( f"医疗预过滤器排除（服药提醒更新）: {query[:50]}")
-            return False
-
-        # ================================================================
-        # 排除模式3：显式要求从知识库查询
-        # 如"腹透患者饮食注意事项，从知识库查询"、"在知识库查一下腹膜炎的症状"
-        # 用户明确要从知识库检索，不需要MedicalQwen推理，直接走到LLM function_call
-        # ================================================================
-        KNOWLEDGE_BASE_MARKERS = {"从知识库", "知识库查", "查知识库", "知识库检索", "知识库里有"}
-        if any(marker in query for marker in KNOWLEDGE_BASE_MARKERS):
-            self.logger.bind(tag=TAG).info(
-                f"医疗预过滤器排除（显式知识库查询）: {query[:50]}"
-            )
-            return False
-
-        # ================================================================
-        # 医疗知识关键词匹配
-        # ================================================================
-        MEDICAL_KEYWORDS = [
-            # 腹透相关
-            "腹透", "腹膜透析", "透析", "腹膜炎",
-            "腹透液", "透析液", "出口感染", "管路",
-            "换液", "换药", "碘伏帽",
-            # 并发症
-            "并发症", "感染", "发炎",
-            # 饮食营养
-            "饮食", "吃什么", "忌口", "食谱", "三餐",
-            "营养", "蛋白质", "饮水量", "喝水", "水分",
-            "钾", "磷", "钠", "盐",
-            # 体征
-            "血压", "血糖", "体重", "尿量", "水肿",
-            "超滤", "干体重", "腹围",
-            # 药物
-            "吃药", "用药", "药物", "药", "禁忌",
-            # 护理
-            "护理", "注意", "怎么", "如何",
-            # 症状
-            "肚子痛", "腹痛", "发热", "发烧", "呕吐",
-            "恶心", "头晕", "乏力", "肿胀",
-        ]
-
-        query_lower = query.lower()
-        for keyword in MEDICAL_KEYWORDS:
-            if keyword in query_lower or keyword in query:
-                self.logger.bind(tag=TAG).debug(f"医疗关键词命中: '{keyword}' (query: {query[:30]}...)")
-                return True
-
-        return False
+        from core.agentscope.config.medical_keywords import is_medical_query
+        return is_medical_query(query, self.logger)
 
     def _direct_medical_chat(self, query: str) -> bool:
         """

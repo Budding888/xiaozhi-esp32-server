@@ -146,6 +146,7 @@ music/
 cython_debug/
 *.iml
 tmp
+logs/
 .history
 .DS_Store
 main/xiaozhi-server/data

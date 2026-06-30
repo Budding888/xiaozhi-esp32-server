@@ -52,7 +52,7 @@ log:
   # 设置日志等级：INFO、DEBUG
   log_level: INFO
   # 设置日志路径
-  log_dir: tmp
+  log_dir: logs
   # 设置日志文件
   log_file: "server.log"
   # 设置数据文件路径
@@ -202,7 +202,7 @@ plugins:
     similarity_threshold: 0.6
     # 向量权重 < 关键词权重：关键词占主导，检索更看重文字字面匹配；向量权重 > 关键词权重：语义向量占主导，检索更看重意思相近；两者相等：语义、关键词各占一半，平衡口语提问和专业名词检索
     # 向量权重 0.7，则关键词权重 0.3
-    vector_similarity_weight": 0.7
+    vector_similarity_weight: 0.7
     # 系统提示词
     chat_system_prompt: "你是医疗知识库专属问答助手，优先基于检索到的知识库内容详细作答。当所有知识库内容都与问题无关时，可使用自身专业医疗知识解答，不做诊断、不开处方，术语严谨、逻辑清晰，全程保持医学术语准确、逻辑清晰，语言客观中立，仅做健康知识科普。"
   submit_weight_data:
@@ -295,6 +295,10 @@ selected_module:
   # 记忆模块，默认不开启记忆；如果想使用超长记忆，推荐使用mem0ai；如果注重隐私，请使用本地的 mem_local_short
   # Memory: nomem
   Memory: mem_local_short
+  # AgentScope 模式 (legacy | agentscope)
+  # legacy: 使用现有 chat() 逻辑（默认，稳定）
+  # agentscope: 使用 AgentScope 管道编排（实验性，仅医疗管道）
+  AgentMode: agentscope
   # 意图识别模块开启后，可以播放音乐、控制音量、识别退出指令。
   # 不想开通意图识别，就设置成：nointent
   # 意图识别可使用intent_llm。优点：通用性强，缺点：增加串行前置意图识别模块，会增加处理时间，支持控制音量大小等iot操作
@@ -1275,3 +1279,34 @@ TTS:
     # speed: 50  # 语速：0-100
     # pitch: 50  # 语调：0-100
     # language: "中文"  # 指定输出语种,如:中文、英语、日语、韩语等,请根据所选音色支持的语言进行设置,不填则默认为中文
+
+# ===== AgentScope 多智能体配置 =====
+# AgentScope 2.0 适配层配置（Adapter/Wrapper 模式）
+# 通过 selected_module.AgentMode 控制启用/关闭
+#   legacy: 使用现有 chat() 逻辑（默认，稳定）
+#   agentscope: 使用 AgentScope 管道编排（实验性）
+agentscope:
+  enabled: true                      # 是否加载 AgentScope 库
+  mode: "agentscope"                      # legacy | agentscope
+
+  # 启用场景 (白名单)
+  enabled_scenes:
+    - medical_pipeline                # 医疗管道
+
+  # 管道配置
+  pipelines:
+    medical_pipeline:
+      stages:
+        - query_optimizer: { enabled: true }
+        - rag_search: { enabled: true, timeout: 10 }
+        - medical_llm: { enabled: true, timeout: 15 }
+        - content_verify: { enabled: true }
+        - merge_fusion: { enabled: true }
+      timeout: 30
+      # 降级到现有逻辑
+      fallback: "legacy"
+
+  # 模型包装器配置
+  model_wrapper:
+    cache_enabled: true
+    cache_ttl: 300
