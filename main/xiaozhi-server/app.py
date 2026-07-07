@@ -1,3 +1,21 @@
+# SSL 兼容性补丁：绕过 Windows 证书存储损坏导致的 SSLError
+# Windows 证书存储中的损坏证书会导致 ssl.create_default_context() 失败，
+# 从而阻止 aiohttp 等库导入。此补丁在检测到错误时自动切换到 certifi 证书。
+import ssl as _ssl
+try:
+    _ssl.create_default_context()
+except _ssl.SSLError:
+    import certifi as _certifi
+    _original_create_default_context = _ssl.create_default_context
+    def _patched_create_default_context(*args, **kwargs):
+        try:
+            return _original_create_default_context(*args, **kwargs)
+        except _ssl.SSLError:
+            _ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+            _ctx.load_verify_locations(_certifi.where())
+            return _ctx
+    _ssl.create_default_context = _patched_create_default_context
+
 import os
 import sys
 import uuid

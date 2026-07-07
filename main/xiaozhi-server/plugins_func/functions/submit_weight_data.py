@@ -59,6 +59,13 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
         f"收到体重上报请求: weight={weight},  remarks={remarks}"
     )
 
+    if not weight:
+        logger.bind(tag=TAG).info("体重未上报，请检查后重新上报")
+        return ActionResponse(
+            action=Action.RESPONSE, result=None,
+            response="您上报的体重数据上报不完整，体重数值未上报，请检查后重新上报"
+        )
+
     # 参数校验
     if weight <= 0 or weight > 500:
         logger.bind(tag=TAG).info(f"体重数值异常: {weight}")

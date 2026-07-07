@@ -57,3 +57,5 @@ openai-whisper>=20250625
 cryptography<44
 #--------- jiter 是 openai/anthropic 的间接依赖，必须含 cp311 wheel
 jiter>=0.15.0
+#--------- SenseVoiceSmall-ONNX 推理需要
+onnxruntime>=1.20.1

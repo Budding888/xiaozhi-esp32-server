@@ -55,6 +55,14 @@ def submit_urine_volume_data( conn: "ConnectionHandler", urine_volume: float, re
         f"收到尿量上报请求: urine_volume={urine_volume},  remarks={remarks}"
     )
 
+    # 参数校验
+    if not urine_volume:
+        logger.bind(tag=TAG).info("尿量未上报，请检查后重新上报")
+        return ActionResponse(
+            action=Action.RESPONSE, result=None,
+            response="您上报的尿量数据上报不完整，尿量数值未上报，请检查后重新上报"
+        )
+
     # 参数校验, 有待进一步优化: https://ai.dangbei.com/share/sPqHXtfMWF
     # 根据尿量值是否给出建议,有待确认与优化
     if urine_volume <= 0:

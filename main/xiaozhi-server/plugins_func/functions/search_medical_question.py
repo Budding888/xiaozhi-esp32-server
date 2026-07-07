@@ -119,7 +119,7 @@ def _medical_search_flow(conn, question):
 
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
     _send_progress_tts(conn, "好的。")
-    _send_progress_tts(conn, "欢迎使用小乐音箱，很高兴为您服务。")
+    _send_progress_tts(conn, "欢迎使用小讷音箱，很高兴为您服务。")
     _send_progress_tts(conn, f"正在为您查询关于{clean_question}，请稍候。")
 
     _send_progress_tts(conn, "正在检索知识库。")
@@ -154,7 +154,7 @@ def _medical_search_flow_v2(conn, question):
 
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
     _send_progress_tts(conn, "好的。")
-    _send_progress_tts(conn, "欢迎使用小乐音箱，很高兴为您服务。")
+    _send_progress_tts(conn, "欢迎使用小讷音箱，很高兴为您服务。")
     _send_progress_tts(conn, f"正在为您查询关于{clean_question}，结果尽快为您呈现，请耐心等待。")
 
     # ===== 阶段1：Query改写（顺序执行，快速）=====
@@ -172,11 +172,13 @@ def _medical_search_flow_v2(conn, question):
 
     if ragflow_healthy:
         with ThreadPoolExecutor(max_workers=2) as executor:
+            _send_progress_tts(conn, "正在检索知识库。")
             future_rag = executor.submit(_parallel_rag_search, conn, search_query)
+
+            _send_progress_tts(conn, "正在检索大模型。")
             future_medical = executor.submit(_call_medical_qwen_v2_no_stream, conn, question)
 
         try:
-            _send_progress_tts(conn, "正在检索知识库。")
             rag_result = future_rag.result()
             if rag_result:
                 logger.bind(tag=TAG).info(f"===========【RAGFlow】并行检索结果===========：{rag_result}")
@@ -184,7 +186,6 @@ def _medical_search_flow_v2(conn, question):
             logger.bind(tag=TAG).error(f"===========并行RAGFlow失败===========: {e}")
 
         try:
-            _send_progress_tts(conn, "正在检索大模型。")
             medical_result = future_medical.result()
             if medical_result:
                 logger.bind(tag=TAG).info(f"===========【MedicalQwen】并行检索结果===========：{medical_result}")

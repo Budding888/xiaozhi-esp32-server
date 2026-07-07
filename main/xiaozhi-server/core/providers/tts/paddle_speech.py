@@ -92,7 +92,8 @@ class TTSProvider(TTSProviderBase):
                 # 发送开始请求
                 start_request = {
                     "task": "tts",
-                    "signal": "start"
+                    "signal": "start",
+                    "spk_id": self.spk_id,
                 }
                 await ws.send(json.dumps(start_request))
 
@@ -134,6 +135,7 @@ class TTSProvider(TTSProviderBase):
                 end_request = {
                     "task": "tts",
                     "signal": "end",
+                    "spk_id": self.spk_id,
                     "session": session_id  # 会话 ID 必须与开始请求中的一致
                 }
                 await ws.send(json.dumps(end_request))

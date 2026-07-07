@@ -41,7 +41,11 @@
       "Bash(powershell -Command \"Stop-Process -Id 13348 -Force; Start-Sleep -Seconds 2\")",
       "Bash(powershell -Command \"Stop-Process -Id 35344 -Force\")",
       "Bash(powershell -Command \"Get-Process -Name python -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id \\\\$_.Id -Force }; Start-Sleep -Seconds 2; netstat -ano | Select-String ':8000|:8003'\" 2>&1)",
-      "Bash(powershell -Command 'Get-Process -Name python -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }')"
+      "Bash(powershell -Command 'Get-Process -Name python -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.Id -Force }')",
+      "Bash(conda install *)",
+      "Bash(SSL_CERT_FILE=$\\(python -c \"import certifi; print\\(certifi.where\\(\\)\\)\"\\) python -c \"import ssl; ssl.create_default_context\\(\\); print\\('SSL OK'\\)\")",
+      "Bash(SSL_CERT_FILE=$\\(python -c \"import certifi; print\\(certifi.where\\(\\)\\)\"\\) python -m pytest tests/test_agentscope_integration.py -k \"test_init_no_functions\" --tb=line)",
+      "Bash(xxd *)"
     ],
     "deny": [],
     "ask": []

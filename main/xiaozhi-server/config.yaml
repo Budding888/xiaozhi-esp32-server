@@ -60,8 +60,8 @@ log:
 
 # 使用完声音文件后删除文件(Delete the sound file when you are done using it)
 delete_audio: true
-# 没有语音输入多久后断开连接(秒)，默认2分钟，即120秒
-close_connection_no_voice_time: 120
+# 全局会话闲置超时：没有语音输入多久后断开连接(秒)，默认2分钟，即120秒. 修改为5分钟，单位秒
+close_connection_no_voice_time: 300
 # TTS请求超时时间(秒)
 tts_timeout: 10
 # 工具调用超时时间(秒)
@@ -113,15 +113,7 @@ wakeup_words:
   - "小乐同学"
   - "你好小智"
   - "嘿你好呀"
-  - "你好小志"
-  - "小爱同学"
-  - "你好小鑫"
-  - "你好小新"
-  - "小美同学"
-  - "小龙小龙"
-  - "喵喵同学"
-  - "小滨小滨"
-  - "小冰小冰"
+  - "小乐你好"
 # MCP接入点地址，地址格式为：ws://你的mcp接入点ip或者域名:端口号/mcp/?token=你的token
 # 详细教程 https://github.com/xinnan-tech/xiaozhi-esp32-server/blob/main/docs/mcp-endpoint-integration.md
 mcp_endpoint: ws://192.168.0.115:8004/mcp_endpoint/mcp/?token=qCVHvDsBB96ZxEV6LJNl//M7fN4yPQpOyOgH2gbL6o8%3D
@@ -366,7 +358,7 @@ Memory:
     type: mem0ai
     # https://app.mem0.ai/dashboard/api-keys
     # 每月有1000次免费调用
-    api_key: 你的mem0ai api key
+    api_key: m0-HObp6oBP91vqkqULvBxONQh2DtNebOIeAqYg6Shn
   powermem:
     # PowerMem是OceanBase开源的agent记忆组件，通过本地LLM进行记忆总结
     # 费用说明：PowerMem本身免费，实际费用取决于所选LLM和数据库
@@ -419,7 +411,8 @@ Memory:
     # 不想使用记忆功能，可以使用nomem
     type: nomem
   mem_local_short:
-    # 本地记忆功能，通过selected_module的llm总结，数据保存在本地服务器，不会上传到外部服务器
+    # 本地记忆功能: 会话超时 / 用户会话重置 → 自动清空当前会话本地短期记忆
+    # 通过selected_module的llm总结，数据保存在本地服务器，不会上传到外部服务器
     type: mem_local_short
     # 配备记忆存储独立的思考模型
     # 如果这里不填，则会默认使用selected_module.LLM的模型作为意图识别的思考模型
@@ -433,6 +426,12 @@ ASR:
     output_dir: tmp/
     api_key: XXXXX
     access_token: XXXXX
+  FunASROnnx:
+    # SenseVoiceSmall-ONNX 量化导出版本，使用 onnxruntime 推理
+    # 相比 FunASR (fun_local)：更小、更快、无需 FunASR 框架依赖
+    type: fun_onnx_local
+    model_dir: models/SenseVoiceSmall-onnx
+    output_dir: tmp/
   FunASRServer:
     # 独立部署FunASR，使用FunASR的API服务，只需要五句话
     # 第一句：mkdir -p ./funasr-runtime-resources/models
@@ -721,7 +720,7 @@ LLM:
     # 定义LLM API类型
     type: openai
     # 可在这里找到你的api key https://platform.deepseek.com/
-    model_name: deepseek-chat
+    model_name: deepseek-v4-flash
     url: https://api.deepseek.com
     api_key: 你的deepseek web key
   ChatGLMLLM:
@@ -859,6 +858,19 @@ TTS:
     # 定义TTS API类型
     type: edge
     voice: zh-CN-XiaoxiaoNeural
+    output_dir: tmp/
+    # language: "中文"  # 指定输出语种,如:中文、英语、日语、韩语等,请根据所选音色支持的语言进行设置,不填则默认为中文
+  MiMoTTStream:
+    # Xiaomi MiMo-V2.5-TTS 流式语音合成
+    # API Key 申请：https://platform.xiaomimimo.com/console/api-keys
+    # 参考文档：core/providers/tts/MiMo TTS 语音合成.html
+    type: mimo_tts_stream
+    api_url: https://api.xiaomimimo.com/v1/chat/completions
+    api_key: sk-ctkr7952o6trc3op3y3edoe55zkyw3szz3mupnewb976xbj5
+    voice: 茉莉
+    emotion: 平静
+    intonation: 活泼
+    timbre: 清亮
     output_dir: tmp/
     # language: "中文"  # 指定输出语种,如:中文、英语、日语、韩语等,请根据所选音色支持的语言进行设置,不填则默认为中文
   DoubaoTTS:

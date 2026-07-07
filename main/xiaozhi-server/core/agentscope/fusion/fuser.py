@@ -96,16 +96,34 @@ def _merge_rag_and_medical_streaming(
 
     返回约定的标记 `__STREAMING_DONE__` 给调用方，外层据此跳过重复 TTS 播报。
     对话记录使用 result 字段保存完整文本。
+
+    注意：当仅有一条结果时（如 RAGFlow 不可用、仅 MedicalQwen 有输出），
+    也会做 TTS 播报（非流式，单次 tts_one_sentence），因为调用方会携带
+    STREAMING_DONE_MARKER 标记，依赖本函数完成 TTS 后告知外层跳过。
     """
     from core.providers.tts.dto.dto import ContentType
 
     logger.bind(tag=TAG).info(f"流式融合知识库 + 医疗大模型: {question}")
 
-    # 只有一条结果时直接返回
-    if not kb_text:
+    # 只有一条结果时直接返回（但仍需做 TTS，因调用方会带 STREAMING_DONE_MARKER）
+    if not kb_text and medical_text:
+        try:
+            conn.tts.tts_one_sentence(
+                conn, ContentType.TEXT, content_detail=medical_text
+            )
+        except Exception as tts_err:
+            logger.bind(tag=TAG).warning(f"流式融合单结果TTS失败: {tts_err}")
         return medical_text
-    if not medical_text:
+    if not medical_text and kb_text:
+        try:
+            conn.tts.tts_one_sentence(
+                conn, ContentType.TEXT, content_detail=kb_text
+            )
+        except Exception as tts_err:
+            logger.bind(tag=TAG).warning(f"流式融合单结果TTS失败: {tts_err}")
         return kb_text
+    if not kb_text and not medical_text:
+        return None
 
     system_prompt = (
         "你是腹透健康助手，融合两条信息源回答。\n"
@@ -113,7 +131,7 @@ def _merge_rag_and_medical_streaming(
         "1. 以问题为中心，综合知识库和医疗模型的信息；\n"
         "2. 内容一致则合并，互补则综合，冲突以知识库为准；\n"
         "3. 分点回答（一. 二. 三.），口语表达；\n"
-        "4. 使用简体中文输出，控制在600字以内。"
+        "4. 使用简体中文输出，控制在700字以内。"
     )
     user_prompt = (
         f"【问题】{question}\n"

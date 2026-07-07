@@ -55,6 +55,14 @@ def submit_heart_rate_data( conn: "ConnectionHandler", heart_rate: float, remark
         f"收到心率上报请求: heart_rate={heart_rate},  remarks={remarks}"
     )
 
+    # 参数校验
+    if not heart_rate:
+        logger.bind(tag=TAG).info("心率未上报，请检查后重新上报")
+        return ActionResponse(
+            action=Action.RESPONSE, result=None,
+            response="您上报的心率数据上报不完整，心率数值未上报，请检查后重新上报"
+        )
+
     # 参数校验, 有待进一步优化: https://ai.dangbei.com/share/cZzAANOoGz
     # 根据心率值是否给出建议,有待确认与优化
     if heart_rate <= 50 or heart_rate >= 180:

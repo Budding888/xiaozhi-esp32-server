@@ -11,7 +11,7 @@ class UIController {
         this.visualizerCanvas = null;
         this.visualizerContext = null;
         this.audioStatsTimer = null;
-        this.currentBackgroundIndex = localStorage.getItem('backgroundIndex') ? parseInt(localStorage.getItem('backgroundIndex')) : 0;
+        this.currentBackgroundIndex = parseInt(localStorage.getItem('backgroundIndex')) || 0;
         this.backgroundImages = ['3.png'];
         this.dialBtnDisabled = false;
 
@@ -56,7 +56,8 @@ class UIController {
         // Apply saved background
         const backgroundContainer = document.querySelector('.background-container');
         if (backgroundContainer) {
-            backgroundContainer.style.backgroundImage = `url('./images/${this.backgroundImages[this.currentBackgroundIndex]}')`;
+            const bgName = this.backgroundImages[this.currentBackgroundIndex] || this.backgroundImages[0] || '3.png';
+            backgroundContainer.style.backgroundImage = `url('./images/${bgName}')`;
         }
 
         this.updateDialButton(false);
@@ -443,7 +444,8 @@ class UIController {
         this.currentBackgroundIndex = (this.currentBackgroundIndex + 1) % this.backgroundImages.length;
         const backgroundContainer = document.querySelector('.background-container');
         if (backgroundContainer) {
-            backgroundContainer.style.backgroundImage = `url('./images/${this.backgroundImages[this.currentBackgroundIndex]}')`;
+            const bgName = this.backgroundImages[this.currentBackgroundIndex] || this.backgroundImages[0] || '3.png';
+            backgroundContainer.style.backgroundImage = `url('./images/${bgName}')`;
         }
         localStorage.setItem('backgroundIndex', this.currentBackgroundIndex);
     }

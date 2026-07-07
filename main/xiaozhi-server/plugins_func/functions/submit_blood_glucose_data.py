@@ -55,9 +55,17 @@ def submit_blood_glucose_data( conn: "ConnectionHandler", blood_glucose: float, 
         f"收到血糖上报请求: blood_glucose={blood_glucose},  remarks={remarks}"
     )
 
+    # 参数校验
+    if not blood_glucose:
+        logger.bind(tag=TAG).info("血糖未上报，请检查后重新上报")
+        return ActionResponse(
+            action=Action.RESPONSE, result=None,
+            response="您上报的血糖数据上报不完整，血糖数值未上报，请检查后重新上报"
+        )
+
     # 参数校验, 有待进一步优化: https://ai.dangbei.com/share/sPqHXtfMWF
     # 根据血糖值是否给出建议,有待确认与优化
-    if blood_glucose <= 0 or blood_glucose > 33.3:
+    if blood_glucose <= 0 or blood_glucose > 20:
         logger.bind(tag=TAG).info(f"血糖数值异常: {blood_glucose}")
         return ActionResponse(
             action=Action.RESPONSE,
