@@ -94,6 +94,7 @@ async def startToChat(conn: "ConnectionHandler", text):
         conn.sentence_id = str(uuid.uuid4().hex)
         await send_stt_message(conn, actual_text)
         # search_medical_question 含同步HTTP调用，使用线程池执行
+        conn.current_query = actual_text
         conn.executor.submit(_direct_medical_and_speak, conn, actual_text)
         return
 
@@ -106,6 +107,8 @@ async def startToChat(conn: "ConnectionHandler", text):
 
     # 意图未被处理，继续常规聊天流程，使用实际文本内容
     await send_stt_message(conn, actual_text)
+    # 预先设置 current_query，防止线程池延迟导致 handleAbortMessage 读不到
+    conn.current_query = actual_text
     conn.executor.submit(conn.chat, actual_text)
 
 
@@ -183,6 +186,29 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
     # 免责声明作为独立的 TTS 消息发送，time.sleep(1) 让消费者线程在队列空时自然停顿，形成"回答结束 → 停顿 → 温馨提示"的播报节奏。
     if not is_error:
         _send_disclaimer_tts(conn)
+
+    # 在发送 LAST 之前，检查是否有被中断的问题需要询问用户
+    # 将询问文本作为 MIDDLE 消息插入，与 LAST 共用当前 sentence_id
+    try:
+        if conn.interrupted_queries and not conn._pending_resume_query:
+            next_query = conn.interrupted_queries.pop(0)
+            conn.logger.bind(tag=TAG).info(
+                f"医疗回答完成，检测到被中断的问题: {next_query}，准备询问用户"
+            )
+            conn._pending_resume_query = next_query
+            conn._pending_resume_timeout = time.time() + 60
+            ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
+            conn.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=conn.sentence_id,
+                    sentence_type=SentenceType.MIDDLE,
+                    content_type=ContentType.TEXT,
+                    content_detail=ask_text,
+                )
+            )
+    except Exception as e:
+        conn.logger.bind(tag=TAG).error(f"触发中断恢复询问失败: {e}")
+
     conn.tts.tts_text_queue.put(
         TTSMessageDTO(
             sentence_id=conn.sentence_id,
@@ -194,6 +220,41 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
     # 记录对话
     conn.tts_MessageText = output
     conn.dialogue.put(Message(role="assistant", content=output))
+
+    # ====== 新增：检查是否有被中断的问题需要询问用户 ======
+    # _direct_medical_and_speak 绕过 chat() 路径，需要在此处手动触发恢复询问
+    # 注意：不使用 conn.executor.submit(conn.chat, None) 来询问
+    # 因为 chat() 会重置 client_abort=False，导致 TTS 残留音频泄漏
+    try:
+        if conn.interrupted_queries and not conn._pending_resume_query:
+            next_query = conn.interrupted_queries.pop(0)
+            conn.logger.bind(tag=TAG).info(
+                f"医疗回答完成，检测到被中断的问题: {next_query}，准备询问用户"
+            )
+            conn._pending_resume_query = next_query
+            conn._pending_resume_timeout = time.time() + 60  # 60秒超时
+            # 直接推送询问 TTS 消息到队列，不经过 chat()/LLM
+            ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
+            # 使用当前 conn.sentence_id，保证 TTS 过滤层不丢弃
+            current_sid = conn.sentence_id
+            conn.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=current_sid,
+                    sentence_type=SentenceType.MIDDLE,
+                    content_type=ContentType.TEXT,
+                    content_detail=ask_text,
+                )
+            )
+            conn.tts.tts_text_queue.put(
+                TTSMessageDTO(
+                    sentence_id=current_sid,
+                    sentence_type=SentenceType.LAST,
+                    content_type=ContentType.ACTION,
+                )
+            )
+    except Exception as e:
+        conn.logger.bind(tag=TAG).error(f"触发中断恢复询问失败: {e}")
+    # ====== 新增结束 ======
 
 
 

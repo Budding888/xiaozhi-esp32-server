@@ -78,28 +78,72 @@ class TTSProviderBase(ABC):
             f"tts-{datetime.now().date()}@{uuid.uuid4().hex}{extension}",
         )
 
-    def handle_opus(self, opus_data: bytes):
+    def handle_opus(self, opus_data: bytes, sentence_id: str = None):
         logger.bind(tag=TAG).debug(f"推送数据到队列里面帧数～～ {len(opus_data)}")
-        self.tts_audio_queue.put((SentenceType.MIDDLE, opus_data, None))
+        # 使用调用时的 sentence_id 标记音频帧
+        self.tts_audio_queue.put((SentenceType.MIDDLE, opus_data, None, sentence_id))
 
     def handle_audio_file(self, file_audio: bytes, text):
         self.before_stop_play_files.append((file_audio, text))
 
-    def to_tts_stream(self, text, opus_handler: Callable[[bytes], None] = None) -> None:
+    def to_tts_stream(self, text, opus_handler: Callable[[bytes], None] = None, expected_sid: str = None) -> None:
         text = MarkdownCleaner.clean_markdown(text)
         max_repeat_time = 5
+
+        # 闭包捕获 sentence_id 快照
+        # 优先级：expected_sid（caller 传入的 message.sentence_id）> conn.sentence_id
+        if expected_sid is not None:
+            retained_sid = expected_sid
+        else:
+            retained_sid = getattr(self.conn, 'sentence_id', None) if self.conn else None
+
+        def _is_stale():
+            """检测当前 TTS 合成是否已过时（被新问题打断）"""
+            if not self.conn:
+                return True
+            if retained_sid is not None:
+                current_sid = getattr(self.conn, 'sentence_id', None)
+                if current_sid is not None and retained_sid != current_sid:
+                    return True
+            if getattr(self.conn, 'client_abort', False):
+                return True
+            return False
+
+        def _make_filtered_opus(original_handler, expected_sid):
+            """包装 opus 回调，加入 sentence_id 过滤"""
+            def _wrapped(data):
+                if expected_sid is not None:
+                    current_sid = getattr(self.conn, 'sentence_id', None) if self.conn else None
+                    if current_sid is not None and expected_sid != current_sid:
+                        logger.bind(tag=TAG).debug(
+                            f"丢弃残留音频帧(sid={expected_sid} != current={current_sid})"
+                        )
+                        return
+                if getattr(self.conn, 'client_abort', False):
+                    return
+                original_handler(data)
+            return _wrapped
+
+        filtered_opus = _make_filtered_opus(
+            opus_handler or self.handle_opus,
+            retained_sid
+        )
+
         if self.delete_audio_file:
             # 需要删除文件的直接转为音频数据
             while max_repeat_time > 0:
                 try:
+                    if _is_stale():
+                        logger.bind(tag=TAG).info("丢弃过时的 TTS 合成任务(old_sid)")
+                        return None
                     audio_bytes = asyncio.run(self.text_to_speak(text, None))
                     if audio_bytes:
-                        self.tts_audio_queue.put((SentenceType.FIRST, None, text))
+                        self.tts_audio_queue.put((SentenceType.FIRST, None, text, retained_sid))
                         audio_bytes_to_data_stream(
                             audio_bytes,
                             file_type=self.audio_file_type,
                             is_opus=True,
-                            callback=opus_handler,
+                            callback=filtered_opus,
                             sample_rate=self.conn.sample_rate,
                             opus_encoder=self.opus_encoder,
                         )
@@ -125,6 +169,9 @@ class TTSProviderBase(ABC):
             try:
                 while not os.path.exists(tmp_file) and max_repeat_time > 0:
                     try:
+                        if _is_stale():
+                            logger.bind(tag=TAG).info("丢弃过时的 TTS 文件合成任务(old_sid)")
+                            return None
                         asyncio.run(self.text_to_speak(text, tmp_file))
                     except Exception as e:
                         logger.bind(tag=TAG).warning(
@@ -143,8 +190,8 @@ class TTSProviderBase(ABC):
                     logger.bind(tag=TAG).error(
                         f"语音生成失败: {text}，请检查网络或服务是否正常"
                     )
-                self.tts_audio_queue.put((SentenceType.FIRST, None, text))
-                self._process_audio_file_stream(tmp_file, callback=opus_handler)
+                self.tts_audio_queue.put((SentenceType.FIRST, None, text, retained_sid))
+                self._process_audio_file_stream(tmp_file, callback=filtered_opus)
             except Exception as e:
                 logger.bind(tag=TAG).error(f"Failed to generate TTS file: {e}")
                 return None
@@ -283,6 +330,16 @@ class TTSProviderBase(ABC):
         while not self.conn.stop_event.is_set():
             try:
                 message = self.tts_text_queue.get(timeout=1)
+
+                # sentence_id 过滤：丢弃属于已过时会话的 TTS 文本消息
+                if message.sentence_id is not None:
+                    current_sid = getattr(self.conn, 'sentence_id', None) if self.conn else None
+                    if current_sid is not None and message.sentence_id != current_sid:
+                        logger.bind(tag=TAG).debug(
+                            f"丢弃残留TTS文本消息(sid={message.sentence_id})"
+                        )
+                        continue
+
                 if message.sentence_type == SentenceType.FIRST:
                     self.conn.client_abort = False
                 if self.conn.client_abort:
@@ -299,7 +356,7 @@ class TTSProviderBase(ABC):
                     self.tts_text_buff.append(message.content_detail)
                     segment_text = self._get_segment_text()
                     if segment_text:
-                        self.to_tts_stream(segment_text, opus_handler=self.handle_opus)
+                        self.to_tts_stream(segment_text, opus_handler=self.handle_opus, expected_sid=message.sentence_id)
                 elif ContentType.FILE == message.content_type:
                     self._process_remaining_text_stream(opus_handler=self.handle_opus)
                     tts_file = message.content_file
@@ -310,7 +367,7 @@ class TTSProviderBase(ABC):
                 if message.sentence_type == SentenceType.LAST:
                     self._process_remaining_text_stream(opus_handler=self.handle_opus)
                     self.tts_audio_queue.put(
-                        (message.sentence_type, [], message.content_detail)
+                        (message.sentence_type, [], message.content_detail, message.sentence_id)
                     )
 
             except queue.Empty:
@@ -327,15 +384,30 @@ class TTSProviderBase(ABC):
         enqueue_audio = []
         while not self.conn.stop_event.is_set():
             text = None
+            sentence_id = None
             try:
                 try:
-                    sentence_type, audio_datas, text = self.tts_audio_queue.get(
-                        timeout=0.1
-                    )
+                    # 4 字段解包（兼容旧格式 3 字段）
+                    data = self.tts_audio_queue.get(timeout=0.1)
+                    if len(data) == 4:
+                        sentence_type, audio_datas, text, sentence_id = data
+                    else:
+                        sentence_type, audio_datas, text = data
+                        sentence_id = None
                 except queue.Empty:
                     if self.conn.stop_event.is_set():
                         break
                     continue
+
+                # sentence_id 过滤：丢弃不属于当前活跃会话的残留音频消息
+                if sentence_id is not None:
+                    current_sid = getattr(self.conn, 'sentence_id', None) if self.conn else None
+                    if current_sid is not None and sentence_id != current_sid:
+                        logger.bind(tag=TAG).debug(
+                            f"丢弃残留音频消息(sid={sentence_id} != current={current_sid})"
+                        )
+                        enqueue_text, enqueue_audio = None, []
+                        continue
 
                 if self.conn.client_abort:
                     logger.bind(tag=TAG).debug("收到打断信号，跳过当前音频数据")
@@ -454,9 +526,9 @@ class TTSProviderBase(ABC):
 
     def _process_before_stop_play_files(self):
         for audio_datas, text in self.before_stop_play_files:
-            self.tts_audio_queue.put((SentenceType.MIDDLE, audio_datas, text))
+            self.tts_audio_queue.put((SentenceType.MIDDLE, audio_datas, text, None))
         self.before_stop_play_files.clear()
-        self.tts_audio_queue.put((SentenceType.LAST, [], None))
+        self.tts_audio_queue.put((SentenceType.LAST, [], None, None))
 
     def _process_remaining_text_stream(
         self, opus_handler: Callable[[bytes], None] = None

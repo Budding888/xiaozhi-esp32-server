@@ -126,6 +126,13 @@ class ConnectionHandler:
         self.client_is_speaking = False
         self.client_listen_mode = "auto"
 
+        # 中断恢复相关
+        self.interrupted_queries = []           # 被中断的问题队列（FIFO）
+        self.current_query = None               # 当前 chat() 正在处理的问题文本
+        self._chat_was_aborted = False          # 当前 chat() 是否被中断过
+        self._pending_resume_query = None       # 等待用户确认恢复的问题
+        self._pending_resume_timeout = 0        # 等待恢复确认的超时时间戳（秒）
+
         # 线程任务相关
         self.loop = None  # 在 handle_connection 中获取运行中的事件循环
         self.stop_event = threading.Event()
@@ -842,21 +849,135 @@ class ConnectionHandler:
         # 更新系统prompt至上下文
         self.dialogue.update_system_message(self.prompt)
 
+    def _inject_resume_prompt(self, pending_query: str):
+        """
+        向对话历史注入恢复询问指令，让 LLM 主动询问用户是否要继续回答被中断的问题。
+
+        Args:
+            pending_query: 被中断的原始问题文本
+        """
+        resume_prompt = (
+            f"[系统提示] 用户之前问过以下问题但回答被新问题打断了：\n"
+            f"「{pending_query}」\n"
+            f"现在新问题已经回答完毕。请你主动询问用户："
+            f"是否需要继续回答「{pending_query}」的问题？\n"
+            f"注意：使用自然的语气，仅当用户确认后再继续回答。"
+            f"如果用户确认，请先给出过渡语（如'好的，我将继续为您解答'），"
+            f"然后根据问题完整回答。"
+        )
+        self.dialogue.put(Message(role="system", content=resume_prompt, is_temporary=True))
+        self.logger.bind(tag=TAG).info(
+            f"已注入恢复询问提示，等待用户确认: {pending_query}"
+        )
+
+    def _is_user_confirming(self, user_input: str, pending_query: str) -> bool:
+        """
+        判断用户是否在确认恢复被中断的问题。
+        """
+        if not user_input or not pending_query:
+            return False
+
+        user_lower = user_input.strip()
+        pending_lower = pending_query.strip()
+
+        # 规则1：用户输入包含原问题的关键词
+        keywords = self._extract_keywords(pending_lower)
+        if any(kw in user_lower for kw in keywords):
+            return True
+
+        # 规则2：明确的确认词
+        confirm_words = ["继续", "好的", "是的", "对", "嗯", "好", "可以", "要"]
+        user_has_confirmation = False
+        user_has_refusal = False
+        for cw in confirm_words:
+            if cw in user_lower:
+                user_has_confirmation = True
+                break
+        refuse_words = ["不用", "不要", "不了", "算了", "跳过", "别"]
+        for rw in refuse_words:
+            if rw in user_lower:
+                user_has_refusal = True
+                break
+        if user_has_confirmation and not user_has_refusal:
+            return True
+
+        return False
+
+    def _is_user_refusing(self, user_input: str, pending_query: str) -> bool:
+        """判断用户是否在拒绝恢复"""
+        if not user_input:
+            return False
+        user_lower = user_input.strip()
+        refuse_words = ["不用", "不要", "不了", "不", "算了", "跳过", "没"]
+        for rw in refuse_words:
+            if rw in user_lower:
+                return True
+        return False
+
+    def _extract_keywords(self, text: str) -> list:
+        """从问题文本中提取关键词用于匹配"""
+        import re
+        # 移除标点和常见疑问词
+        cleaned = re.sub(r'[吗呢啊吧呀么么什哪谁啥的得了着过是]', '', text)
+        cleaned = re.sub(r'[？?！!。，、；：""''【】《》（）\s]', '', cleaned)
+
+        words = [w.strip() for w in re.split(r'[,，\s]+', cleaned) if w.strip()]
+        result = []
+        for word in words:
+            if len(word) >= 2:
+                result.append(word)
+        if not result and cleaned:
+            result.append(cleaned[:8])
+        elif not result:
+            result.append(text[:8])
+        return result
+
     def chat(self, query, depth=0):
         if query is not None:
             self.logger.bind(tag=TAG).info(f"大模型收到用户消息: {query}")
 
         # 为最顶层时新建会话ID和发送FIRST请求
         if depth == 0:
-            self.sentence_id = str(uuid.uuid4().hex)
-            self.dialogue.put(Message(role="user", content=query))
-            self.tts.tts_text_queue.put(
-                TTSMessageDTO(
-                    sentence_id=self.sentence_id,
-                    sentence_type=SentenceType.FIRST,
-                    content_type=ContentType.ACTION,
+            # 检测用户确认恢复（必须在 current_query 设置之前）
+            if self._pending_resume_query and query:
+                if self._is_user_confirming(query, self._pending_resume_query):
+                    self.logger.bind(tag=TAG).info(
+                        f"用户确认恢复问题: {self._pending_resume_query}"
+                    )
+                    self._pending_resume_query = None
+                    self._pending_resume_timeout = 0
+                elif self._is_user_refusing(query, self._pending_resume_query):
+                    self.logger.bind(tag=TAG).info(
+                        f"用户拒绝恢复问题: {self._pending_resume_query}，放弃恢复"
+                    )
+                    self._pending_resume_query = None
+                    self._pending_resume_timeout = 0
+                elif time.time() > self._pending_resume_timeout > 0:
+                    self.logger.bind(tag=TAG).info(
+                        f"恢复确认超时，放弃恢复: {self._pending_resume_query}"
+                    )
+                    self._pending_resume_query = None
+                    self._pending_resume_timeout = 0
+
+            # 跟踪当前问题和重置中断标记
+            self.current_query = query
+            self._chat_was_aborted = False
+
+            # query=None 时仅注入恢复提示，不入 dialogue、不送 TTS FIRST
+            if query is None:
+                self.logger.bind(tag=TAG).info("chat(None): 仅驱动 LLM 响应恢复提示")
+                # 此时 dialogue 中已有 _inject_resume_prompt 注入的临时消息
+                # LLM 会根据该提示生成询问语句，不需要添加用户消息
+            else:
+                self.sentence_id = str(uuid.uuid4().hex)
+                self.dialogue.put(Message(role="user", content=query))
+                self.tts.tts_text_queue.put(
+                    TTSMessageDTO(
+                        sentence_id=self.sentence_id,
+                        sentence_type=SentenceType.FIRST,
+                        content_type=ContentType.ACTION,
+                    )
                 )
-            )
 
         # 设置最大递归深度，避免无限循环，可根据实际需求调整
         MAX_DEPTH = 5
@@ -1008,6 +1129,7 @@ class ConnectionHandler:
         try:
             for response in llm_responses:
                 if self.client_abort:
+                    self._chat_was_aborted = True
                     break
                 if self.intent_type == "function_call" and functions is not None:
                     content, tools_call = response
@@ -1065,8 +1187,8 @@ class ConnectionHandler:
                     )
                 )
             return
-        # 处理function call
-        if tool_call_flag:
+        # 处理function call（被中断时跳过，防止工具结果写入TTS队列与B交叉）
+        if tool_call_flag and not self._chat_was_aborted:
             bHasError = False
             # 处理基于文本的工具调用格式
             if len(tool_calls_list) == 0 and content_arguments:
@@ -1163,8 +1285,8 @@ class ConnectionHandler:
                 if tool_results:
                     self._handle_function_result(tool_results, depth=depth)
 
-        # 存储对话内容
-        if len(response_message) > 0:
+        # 存储对话内容（被中断时不保存不完整响应，防止污染对话历史）
+        if len(response_message) > 0 and not self._chat_was_aborted:
             text_buff = "".join(response_message)
             self.tts_MessageText = text_buff
             self.dialogue.put(Message(role="assistant", content=text_buff))
@@ -1173,7 +1295,8 @@ class ConnectionHandler:
             if depth == 0 and not tool_call_flag:
                 self.tool_call_stats['consecutive_no_call'] += 1
 
-        if depth == 0:
+        # 被中断的 chat 不应发送 LAST，防止干扰 TTS 队列边界
+        if depth == 0 and not self._chat_was_aborted:
             self.tts.tts_text_queue.put(
                 TTSMessageDTO(
                     sentence_id=self.sentence_id,
@@ -1188,15 +1311,31 @@ class ConnectionHandler:
                 )
             )
 
-            # 清理临时插入的工具调用提醒消息（使用标记清理）
-            if tool_call_reminder and len(self.dialogue.dialogue) > 0:
-                original_length = len(self.dialogue.dialogue)
+            # 清理所有临时的系统消息（工具提醒 + 恢复提示等）
+            temp_messages = [msg for msg in self.dialogue.dialogue
+                             if getattr(msg, 'is_temporary', False)]
+            if temp_messages:
                 self.dialogue.dialogue = [
                     msg for msg in self.dialogue.dialogue
                     if not getattr(msg, 'is_temporary', False)
                 ]
-                if len(self.dialogue.dialogue) < original_length:
-                    self.logger.bind(tag=TAG).debug("已清理临时的工具调用提醒消息")
+                self.logger.bind(tag=TAG).debug(
+                    f"已清理 {len(temp_messages)} 条临时系统消息"
+                )
+
+            # 检查是否有被中断的问题需要询问用户
+            # 使用固定 TTS 提示直接询问，不经过 chat()/LLM 路径
+            if self.interrupted_queries and not self._pending_resume_query:
+                next_query = self.interrupted_queries.pop(0)
+                self.logger.bind(tag=TAG).info(
+                    f"当前回答完成，检测到被中断的问题: {next_query}，准备询问用户"
+                )
+                self._pending_resume_query = next_query
+                self._pending_resume_timeout = time.time() + 60  # 60秒超时
+                ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
+                self.tts.tts_text_queue.put(
+                    TTSMessageDTO(sentence_id=self.sentence_id, sentence_type=SentenceType.MIDDLE, content_type=ContentType.TEXT, content_detail=ask_text)
+                )
 
         return True
 
@@ -1265,6 +1404,26 @@ class ConnectionHandler:
                 self.logger.bind(tag=TAG).info(
                     f"[AgentScope] 医疗管道完成 ✅"
                 )
+
+                # 检查是否有被中断的问题需要询问用户
+                # 使用固定 TTS 提示（MIDDLE 消息），与 LAST 共用当前 sentence_id
+                try:
+                    if self.interrupted_queries and not self._pending_resume_query:
+                        next_query = self.interrupted_queries.pop(0)
+                        self.logger.bind(tag=TAG).info(
+                            f"[AgentScope] 回答完成，检测到被中断的问题: {next_query}，准备询问用户"
+                        )
+                        self._pending_resume_query = next_query
+                        self._pending_resume_timeout = time.time() + 60
+                        ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
+                        self.tts.tts_text_queue.put(
+                            TTSMessageDTO(sentence_id=self.sentence_id, sentence_type=SentenceType.MIDDLE, content_type=ContentType.TEXT, content_detail=ask_text)
+                        )
+                except Exception as e:
+                    self.logger.bind(tag=TAG).error(
+                        f"[AgentScope] 触发中断恢复询问失败: {e}"
+                    )
+
                 return True
             else:
                 self.logger.bind(tag=TAG).warning(
@@ -1403,6 +1562,26 @@ class ConnectionHandler:
         )
 
         self.logger.bind(tag=TAG).info("医疗直接路由处理完成")
+
+        # 检查是否有被中断的问题需要询问用户
+        # 使用固定 TTS 提示（MIDDLE 消息），与 LAST 共用当前 sentence_id
+        try:
+            if self.interrupted_queries and not self._pending_resume_query:
+                next_query = self.interrupted_queries.pop(0)
+                self.logger.bind(tag=TAG).info(
+                    f"医疗回答完成，检测到被中断的问题: {next_query}，准备询问用户"
+                )
+                self._pending_resume_query = next_query
+                self._pending_resume_timeout = time.time() + 60
+                ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
+                self.tts.tts_text_queue.put(
+                    TTSMessageDTO(sentence_id=self.sentence_id, sentence_type=SentenceType.MIDDLE, content_type=ContentType.TEXT, content_detail=ask_text)
+                )
+        except Exception as e:
+            self.logger.bind(tag=TAG).error(
+                f"触发中断恢复询问失败: {e}"
+            )
+
         return True
 
     def _handle_function_result(self, tool_results, depth):

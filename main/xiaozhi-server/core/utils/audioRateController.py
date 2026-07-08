@@ -45,6 +45,8 @@ class AudioRateController:
 
     def add_audio(self, opus_packet):
         """添加音频包到队列"""
+        self._ensure_sending()
+
         # 如果队列之前为空，需要调整时间戳以保持播放时间连续
         # 这样工具调用等待期间，新加入的音频不会提前播放
         # 如果间隔很短（<1帧），说明是正常的流式传输，不需要重置
@@ -69,6 +71,8 @@ class AudioRateController:
         Args:
             message_callback: 消息发送回调函数 async def()
         """
+        self._ensure_sending()
+
         if len(self.queue) == 0 and self.play_position > 0:
             elapsed_since_empty = (time.monotonic() - self._last_queue_empty_time) * 1000
             if elapsed_since_empty >= self.frame_duration:
@@ -102,12 +106,13 @@ class AudioRateController:
             if item_type == "message":
                 # 消息类型：立即发送，不占用播放时间
                 _, message_callback = item
-                self.queue.popleft()
                 try:
                     await message_callback()
                 except Exception as e:
                     self.logger.bind(tag=TAG).error(f"发送消息失败: {e}")
                     raise
+                finally:
+                    self.queue.popleft()
 
             elif item_type == "audio":
                 if self.start_timestamp is None:
@@ -136,19 +141,64 @@ class AudioRateController:
                         # 时间已到，跳出等待循环
                         break
 
-                # 时间已到，从队列移除并发送
-                self.queue.popleft()
+                # 时间已到，先递增播放位置再发送，finally 中出队
                 self.play_position += self.frame_duration
                 try:
                     await send_audio_callback(opus_packet)
                 except Exception as e:
                     self.logger.bind(tag=TAG).error(f"发送音频失败: {e}")
                     raise
+                finally:
+                    self.queue.popleft()
 
         # 队列处理完后清除事件
         self.queue_empty_event.set()
         self.queue_has_data_event.clear()
         self._last_queue_empty_time = time.monotonic()  # 记录队列清空时间
+
+    def _ensure_sending(self):
+        """
+        确保后台发送循环正在运行。
+        检测发送任务是否存活，若停止则自动重启。
+        在 add_audio() 和 add_message() 开头调用。
+        """
+        if not getattr(self, '_send_callback', None):
+            return  # 尚未初始化，跳过
+
+        task_alive = (
+            hasattr(self, 'pending_send_task')
+            and self.pending_send_task is not None
+            and not self.pending_send_task.done()
+        )
+
+        if not task_alive:
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                return
+
+            if loop.is_running():
+                self.logger.bind(tag=TAG).warning("发送循环已停止，自动重启...")
+                self.pending_send_task = asyncio.create_task(self._run_send_loop())
+
+    async def _run_send_loop(self):
+        """
+        持续运行的音频发送循环。
+        异常时不退出，仅主动取消时退出。
+        """
+        while True:
+            try:
+                await self.queue_has_data_event.wait()
+                await self.check_queue(self._send_callback)
+            except asyncio.CancelledError:
+                self.logger.bind(tag=TAG).debug("音频发送循环已主动停止")
+                break
+            except Exception as e:
+                self.logger.bind(tag=TAG).error(
+                    f"音频发送循环异常，自动恢复: {e}"
+                )
+                await asyncio.sleep(0.1)
+                continue
 
     def start_sending(self, send_audio_callback):
         """
@@ -160,20 +210,8 @@ class AudioRateController:
         Returns:
             asyncio.Task: 发送任务
         """
-
-        async def _send_loop():
-            try:
-                while True:
-                    # 等待队列数据事件，不轮询等待占用CPU
-                    await self.queue_has_data_event.wait()
-
-                    await self.check_queue(send_audio_callback)
-            except asyncio.CancelledError:
-                self.logger.bind(tag=TAG).debug("音频发送循环已停止")
-            except Exception as e:
-                self.logger.bind(tag=TAG).error(f"音频发送循环异常: {e}")
-
-        self.pending_send_task = asyncio.create_task(_send_loop())
+        self._send_callback = send_audio_callback
+        self.pending_send_task = asyncio.create_task(self._run_send_loop())
         return self.pending_send_task
 
     def stop_sending(self):

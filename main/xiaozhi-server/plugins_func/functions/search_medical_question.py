@@ -119,7 +119,7 @@ def _medical_search_flow(conn, question):
 
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
     _send_progress_tts(conn, "好的。")
-    _send_progress_tts(conn, "欢迎使用小讷音箱，很高兴为您服务。")
+    _send_progress_tts(conn, "很高兴为您服务。")
     _send_progress_tts(conn, f"正在为您查询关于{clean_question}，请稍候。")
 
     _send_progress_tts(conn, "正在检索知识库。")
@@ -154,11 +154,11 @@ def _medical_search_flow_v2(conn, question):
 
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
     _send_progress_tts(conn, "好的。")
-    _send_progress_tts(conn, "欢迎使用小讷音箱，很高兴为您服务。")
+    _send_progress_tts(conn, "很高兴为您服务。")
     _send_progress_tts(conn, f"正在为您查询关于{clean_question}，结果尽快为您呈现，请耐心等待。")
 
     # ===== 阶段1：Query改写（顺序执行，快速）=====
-    _send_progress_tts(conn, "开始进行知识库和大模型检索。")
+    _send_progress_tts(conn, "开始进行综合搜索。")
     optimized_query = _optimize_rag_query(conn, question)
     search_query = optimized_query or question
     logger.bind(tag=TAG).info(f"===========用户query改写结果===========：{search_query}")
@@ -172,34 +172,34 @@ def _medical_search_flow_v2(conn, question):
 
     if ragflow_healthy:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            _send_progress_tts(conn, "正在检索知识库。")
+            _send_progress_tts(conn, "正在搜索知识库。")
             future_rag = executor.submit(_parallel_rag_search, conn, search_query)
 
-            _send_progress_tts(conn, "正在检索大模型。")
+            _send_progress_tts(conn, "正在搜索大模型。")
             future_medical = executor.submit(_call_medical_qwen_v2_no_stream, conn, question)
 
         try:
             rag_result = future_rag.result()
             if rag_result:
-                logger.bind(tag=TAG).info(f"===========【RAGFlow】并行检索结果===========：{rag_result}")
+                logger.bind(tag=TAG).info(f"===========【RAGFlow】并行搜索结果===========：{rag_result}")
         except Exception as e:
             logger.bind(tag=TAG).error(f"===========并行RAGFlow失败===========: {e}")
 
         try:
             medical_result = future_medical.result()
             if medical_result:
-                logger.bind(tag=TAG).info(f"===========【MedicalQwen】并行检索结果===========：{medical_result}")
+                logger.bind(tag=TAG).info(f"===========【MedicalQwen】并行搜索结果===========：{medical_result}")
         except Exception as e:
             logger.bind(tag=TAG).error(f"===========并行MedicalQwen失败===========: {e}")
     else:
         logger.bind(tag=TAG).info("RAGFlow 不可用，仅执行 MedicalQwen 推理")
-        _send_progress_tts(conn, "正在检索大模型。")
+        _send_progress_tts(conn, "正在搜索大模型。")
         medical_result = _call_medical_qwen_v2_no_stream(conn, question)
         if medical_result:
             logger.bind(tag=TAG).info(f"===========【MedicalQwen】单独检索结果===========：{medical_result}")
 
     # ===== 阶段3：通用LLM融合（流式：生成一句播报一句） =====
-    _send_progress_tts(conn, "正在为您整理相关检索结果，麻烦您稍等片刻哦。")
+    _send_progress_tts(conn, "正在总结相关搜索结果，请稍等。")
 
     merged_answer = _merge_rag_and_medical_streaming(
         conn, question, rag_result, medical_result
