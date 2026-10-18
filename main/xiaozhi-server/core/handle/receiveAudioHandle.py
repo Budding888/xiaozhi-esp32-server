@@ -71,6 +71,19 @@ async def startToChat(conn: "ConnectionHandler", text):
     else:
         conn.current_speaker = None
 
+    # 清理可能残留的 ASR 识别会话。
+    # 正常路径下 handle_voice_stop 已在 _finalize_and_report 中调用过 cleanup；
+    # 但设备端 ASR 较快时，设备会直接发送带文本的 listen 消息，此时服务端
+    # 流式 ASR 会话可能仍在进行、尚未收到 final 结果，若不清理，该会话会一直
+    # 等待音频，23 秒后触发 SDK 静音超时（request timeout after 23 seconds）。
+    # stop_ws_connection 是基类接口，非流式 ASR 为 no-op，流式 ASR 会停止会话。
+    # Fun-ASR 的 Recognition.stop() 会 join SDK 工作线程，放在线程池执行，
+    # 避免网络收尾期间阻塞 asyncio 事件循环。
+    try:
+        await asyncio.to_thread(conn.asr.stop_ws_connection)
+    except Exception as e:
+        conn.logger.bind(tag=TAG).debug(f"清理ASR会话跳过: {e}")
+
     if conn.need_bind:
         await check_bind_device(conn)
         return
@@ -197,7 +210,7 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
             )
             conn._pending_resume_query = next_query
             conn._pending_resume_timeout = time.time() + 60
-            ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
+            ask_text = f"上个问题解答未完成，请问是否需要我继续为您解答？"
             conn.tts.tts_text_queue.put(
                 TTSMessageDTO(
                     sentence_id=conn.sentence_id,
@@ -234,7 +247,7 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
             conn._pending_resume_query = next_query
             conn._pending_resume_timeout = time.time() + 60  # 60秒超时
             # 直接推送询问 TTS 消息到队列，不经过 chat()/LLM
-            ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
+            ask_text = f"上个问题解答未完成，请问是否需要我继续为您解答？"
             # 使用当前 conn.sentence_id，保证 TTS 过滤层不丢弃
             current_sid = conn.sentence_id
             conn.tts.tts_text_queue.put(

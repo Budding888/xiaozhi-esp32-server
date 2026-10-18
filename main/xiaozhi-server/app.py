@@ -16,6 +16,19 @@ except _ssl.SSLError:
             return _ctx
     _ssl.create_default_context = _patched_create_default_context
 
+    # websocket-client（DashScope TTS SDK 内部使用）在建立连接时直接调用
+    # SSLContext.load_default_certs()，而不会经过 create_default_context()，
+    # 因此上面的补丁无法覆盖它，会在损坏的证书存储上抛出 SSLError，导致
+    # TTS 报 "websocket connection could not established within 5s"。
+    # 这里额外补丁 load_default_certs，在失败时回退到 certifi 证书。
+    _original_load_default_certs = _ssl.SSLContext.load_default_certs
+    def _patched_load_default_certs(self, purpose=_ssl.Purpose.SERVER_AUTH):
+        try:
+            return _original_load_default_certs(self, purpose)
+        except _ssl.SSLError:
+            self.load_verify_locations(_certifi.where())
+    _ssl.SSLContext.load_default_certs = _patched_load_default_certs
+
 import os
 import sys
 import uuid

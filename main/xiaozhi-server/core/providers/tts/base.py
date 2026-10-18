@@ -71,6 +71,9 @@ class TTSProviderBase(ABC):
         self.tts_stop_request = False
         self.processed_chars = 0
         self.is_first_sentence = True
+        # 字幕（流式文本）缓冲：由流式 TTS 通过 push_caption_text 填充
+        self._caption_buffer = ""
+        self._caption_is_first_sentence = True
 
     def generate_filename(self, extension=".wav"):
         return os.path.join(
@@ -418,9 +421,11 @@ class TTSProviderBase(ABC):
                 if sentence_type is not SentenceType.MIDDLE:
                     if self.report_on_last:
                         # 累积模式：适用于全程只有一个语音流的TTS（如seed-tts-2.0）
-                        # FIRST时只记录文本，音频持续累积，仅在LAST时统一上报
+                        # FIRST时只记录文本，音频持续累积，仅在LAST时统一上报。
+                        # 用累加而非覆盖：流式 TTS 会按句下发多条带文本的 FIRST
+                        # （字幕），覆盖会导致上报的助手文本只剩最后一句。
                         if text:
-                            enqueue_text = text
+                            enqueue_text = (enqueue_text or "") + text
                         if sentence_type == SentenceType.LAST:
                             enqueue_tts_report(self.conn, enqueue_text, enqueue_audio)
                             enqueue_audio = []
@@ -554,3 +559,74 @@ class TTSProviderBase(ABC):
             if config_key in config:
                 val = convert_percentage_to_range(config[config_key], min_val, max_val, base_val)
                 setattr(self, attr_name, transform(val) if transform else val)
+
+    # ------------------------------------------------------------------
+    # 字幕（文字）流式输出
+    #
+    # 非流式/单流式 TTS 走 to_tts_stream()，会把整句文本作为 FIRST 推入
+    # tts_audio_queue，客户端因此能收到 sentence_start 文本。
+    # 双流式 TTS（QwenAudio、讯飞等）直接调用 SDK 合成、音频帧由回调推送，
+    # 不经过 to_tts_stream()，所以必须显式调用下面三个钩子，才能保证
+    # 「LLM 输出的文字」与语音一样按句流式下发给客户端。
+    # ------------------------------------------------------------------
+    def reset_caption_stream(self):
+        """会话开始：清空字幕缓冲，避免上一轮残留文本混入。"""
+        self._caption_buffer = ""
+        self._caption_is_first_sentence = True
+
+    def push_caption_text(self, text, sentence_id=None):
+        """累积 LLM 流式文本，凑齐一个完整句子后立即下发 sentence_start。"""
+        if not text:
+            return
+        self._caption_buffer = getattr(self, "_caption_buffer", "") + text
+        while True:
+            boundary = self._caption_sentence_boundary()
+            if boundary < 0:
+                break
+            sentence = self._caption_buffer[: boundary + 1]
+            self._caption_buffer = self._caption_buffer[boundary + 1 :]
+            self._caption_is_first_sentence = False
+            self._emit_caption_sentence(sentence, sentence_id)
+
+    def flush_caption_text(self, sentence_id=None):
+        """会话结束：补发没有以标点结尾的尾部文本。"""
+        remaining = getattr(self, "_caption_buffer", "")
+        self._caption_buffer = ""
+        self._caption_is_first_sentence = True
+        if remaining.strip():
+            self._emit_caption_sentence(remaining, sentence_id)
+
+    def _caption_sentence_boundary(self) -> int:
+        """返回字幕缓冲中可下发句子的结束下标，找不到返回 -1。
+
+        首句使用更宽松的标点集合（含逗号）以便更快显示第一段文字，
+        切句策略与 _get_segment_text() 保持一致。
+        """
+        if getattr(self, "_caption_is_first_sentence", True):
+            punctuations = self.first_sentence_punctuations
+        else:
+            punctuations = self.punctuations
+        boundary = -1
+        for punct in punctuations:
+            pos = self._caption_buffer.rfind(punct)
+            if pos != -1 and (boundary == -1 or pos < boundary):
+                boundary = pos
+        return boundary
+
+    def _emit_caption_sentence(self, sentence_text: str, sentence_id=None):
+        """把一句话作为 sentence_start 推入音频队列。
+
+        复用 tts_audio_queue 的 FIRST 通道（与普通 TTS 的文字下发路径一致），
+        交给 _audio_play_priority_thread 统一发送，从而保留 sentence_id 过滤、
+        打断检查，以及与音频包之间的先后顺序。
+        """
+        # 与语音走同一套清洗规则，避免字幕里出现 **加粗** 等 markdown 记号
+        text = MarkdownCleaner.clean_markdown(sentence_text).strip()
+        if not text:
+            return
+        if self.conn is not None and getattr(self.conn, "client_abort", False):
+            return
+        if not sentence_id and self.conn is not None:
+            # 未显式传入时按当前会话标记，确保播放线程的 sentence_id 过滤生效
+            sentence_id = getattr(self.conn, "sentence_id", None)
+        self.tts_audio_queue.put((SentenceType.FIRST, [], text, sentence_id))

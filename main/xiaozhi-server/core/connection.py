@@ -113,6 +113,7 @@ class ConnectionHandler:
         self.websocket: websockets.ServerConnection | None = None
         self.headers = None
         self.device_id = None
+        self.client_id = None
         self.client_ip = None
         self.prompt = None
         self.welcome_msg = None
@@ -239,6 +240,9 @@ class ConnectionHandler:
             )
 
             self.device_id = self.headers.get("device-id", None)
+            self.client_id = self.headers.get("client-id", None)
+
+            self.logger.bind(tag=TAG).info(f"当前用户客户端ID：{self.client_id}")
 
             # 认证通过,继续处理
             self.websocket = ws
@@ -914,6 +918,34 @@ class ConnectionHandler:
                 return True
         return False
 
+    def _enqueue_resume_query_tts(self, next_query: str) -> None:
+        """把「中断恢复询问」作为 TTS 消息入队：MIDDLE 文本 + 紧随其后的 LAST。
+
+        恢复询问是在主回答 LAST 之后追加的，流式 TTS 会因此重建一个会话。
+        必须紧跟一条 LAST 让该会话通过 finish_session 下发 FINISH 自我收尾；
+        否则重建出的会话一直空转，23 秒后被 DashScope 空闲看门狗以
+        task-failed("request timeout after 23 seconds") 掐掉。
+        三条恢复路径（chat / _agentscope_chat / _direct_medical_chat）共用本方法。
+        """
+        ask_text = (
+            f"上个问题解答未完成，请问是否需要我继续为您解答"
+        )
+        self.tts.tts_text_queue.put(
+            TTSMessageDTO(
+                sentence_id=self.sentence_id,
+                sentence_type=SentenceType.MIDDLE,
+                content_type=ContentType.TEXT,
+                content_detail=ask_text,
+            )
+        )
+        self.tts.tts_text_queue.put(
+            TTSMessageDTO(
+                sentence_id=self.sentence_id,
+                sentence_type=SentenceType.LAST,
+                content_type=ContentType.ACTION,
+            )
+        )
+
     def _extract_keywords(self, text: str) -> list:
         """从问题文本中提取关键词用于匹配"""
         import re
@@ -1332,10 +1364,7 @@ class ConnectionHandler:
                 )
                 self._pending_resume_query = next_query
                 self._pending_resume_timeout = time.time() + 60  # 60秒超时
-                ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
-                self.tts.tts_text_queue.put(
-                    TTSMessageDTO(sentence_id=self.sentence_id, sentence_type=SentenceType.MIDDLE, content_type=ContentType.TEXT, content_detail=ask_text)
-                )
+                self._enqueue_resume_query_tts(next_query)
 
         return True
 
@@ -1415,10 +1444,7 @@ class ConnectionHandler:
                         )
                         self._pending_resume_query = next_query
                         self._pending_resume_timeout = time.time() + 60
-                        ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
-                        self.tts.tts_text_queue.put(
-                            TTSMessageDTO(sentence_id=self.sentence_id, sentence_type=SentenceType.MIDDLE, content_type=ContentType.TEXT, content_detail=ask_text)
-                        )
+                        self._enqueue_resume_query_tts(next_query)
                 except Exception as e:
                     self.logger.bind(tag=TAG).error(
                         f"[AgentScope] 触发中断恢复询问失败: {e}"
@@ -1573,10 +1599,7 @@ class ConnectionHandler:
                 )
                 self._pending_resume_query = next_query
                 self._pending_resume_timeout = time.time() + 60
-                ask_text = f"检测到上一轮问题解答未完成，请问是否需要我继续为您解答「{next_query}」相关内容？"
-                self.tts.tts_text_queue.put(
-                    TTSMessageDTO(sentence_id=self.sentence_id, sentence_type=SentenceType.MIDDLE, content_type=ContentType.TEXT, content_detail=ask_text)
-                )
+                self._enqueue_resume_query_tts(next_query)
         except Exception as e:
             self.logger.bind(tag=TAG).error(
                 f"触发中断恢复询问失败: {e}"

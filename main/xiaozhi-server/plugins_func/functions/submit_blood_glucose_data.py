@@ -104,7 +104,7 @@ def submit_blood_glucose_data( conn: "ConnectionHandler", blood_glucose: float, 
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
         "device_id": conn.device_id,
-        "patient_id": conn.device_id,
+        "client_id": conn.client-id,
         "value": blood_glucose,
         "remarks": remarks or "",
         "type": "submit_blood_glucose_data",
@@ -114,6 +114,7 @@ def submit_blood_glucose_data( conn: "ConnectionHandler", blood_glucose: float, 
 
     headers = {
         "Content-Type": "application/json",
+        "version": "v1",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

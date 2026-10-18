@@ -181,6 +181,7 @@ class TTSProvider(TTSProviderBase):
                         )
                         future.result(timeout=self.tts_timeout)
                         self.before_stop_play_files.clear()
+                        self.reset_caption_stream()
                         logger.bind(tag=TAG).info("TTS会话启动成功")
 
                     except Exception as e:
@@ -193,6 +194,10 @@ class TTSProvider(TTSProviderBase):
                         try:
                             logger.bind(tag=TAG).debug(
                                 f"开始发送TTS文本: {message.content_detail}"
+                            )
+                            # 文字流式输出：句子一完整就下发 sentence_start
+                            self.push_caption_text(
+                                message.content_detail, message.sentence_id
                             )
                             future = asyncio.run_coroutine_threadsafe(
                                 self.text_to_speak(message.content_detail, None),
@@ -217,6 +222,8 @@ class TTSProvider(TTSProviderBase):
                 if message.sentence_type == SentenceType.LAST:
                     try:
                         logger.bind(tag=TAG).info("开始结束TTS会话...")
+                        # 补发最后一段没有以标点结尾的字幕
+                        self.flush_caption_text(message.sentence_id)
                         asyncio.run_coroutine_threadsafe(
                             self.finish_session(self.conn.sentence_id),
                             loop=self.conn.loop,
@@ -236,8 +243,20 @@ class TTSProvider(TTSProviderBase):
         """发送文本到TTS服务进行合成"""
         try:
             if self.ws is None:
-                logger.bind(tag=TAG).warning(f"WebSocket连接不存在，终止发送文本")
-                return
+                # 上一轮会话可能已被 LAST 关闭（如中断恢复场景
+                # 会在 LAST 之后再追加一条 MIDDLE 文本询问用户）。
+                # 此时按需重建连接，避免丢弃该段语音。
+                logger.bind(tag=TAG).warning(
+                    "WebSocket连接不存在，正在重建会话后继续发送文本"
+                )
+                sid = getattr(self.conn, "sentence_id", None)
+                if sid:
+                    await self.start_session(sid)
+                if self.ws is None:
+                    logger.bind(tag=TAG).error(
+                        "重建WebSocket连接失败，终止发送文本"
+                    )
+                    return
 
             filtered_text = MarkdownCleaner.clean_markdown(text)
             if filtered_text:
@@ -361,14 +380,9 @@ class TTSProvider(TTSProviderBase):
                                     self._process_before_stop_play_files()
                                     break
                                 else:
-                                    if self.conn.tts_MessageText:
-                                        logger.bind(tag=TAG).info(
-                                            f"句子语音生成成功： {self.conn.tts_MessageText}"
-                                        )
-                                        self.tts_audio_queue.put(
-                                            (SentenceType.FIRST, [], self.conn.tts_MessageText)
-                                        )
-                                        self.conn.tts_MessageText = None
+                                    # 字幕（文字）由 push_caption_text 在文本提交时按句下发，
+                                    # 这里不再用整段回答文本一次性下发，避免文字不流式
+                                    logger.bind(tag=TAG).debug("一句话合成结束")
                                     try:
                                         audio_bytes = base64.b64decode(audio_data)
                                         self.opus_encoder.encode_pcm_to_opus_stream(

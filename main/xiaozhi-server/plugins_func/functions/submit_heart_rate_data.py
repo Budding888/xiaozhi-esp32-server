@@ -104,7 +104,7 @@ def submit_heart_rate_data( conn: "ConnectionHandler", heart_rate: float, remark
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
         "device_id": conn.device_id,
-        "patient_id": conn.device_id,
+        "client_id": conn.client-id,
         "value": heart_rate,
         "remarks": remarks or "",
         "type": "submit_heart_rate_data",
@@ -114,6 +114,7 @@ def submit_heart_rate_data( conn: "ConnectionHandler", heart_rate: float, remark
 
     headers = {
         "Content-Type": "application/json",
+        "version": "v1",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

@@ -129,7 +129,7 @@ def update_medication_reminder_status(
     date_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
         "device_id": conn.device_id,
-        "patient_id": conn.device_id,
+        "client_id": conn.client-id,
         "medication_period": medication_period,
         "medicine_name": medicine_name,
         "medication_status": medication_status,

@@ -109,7 +109,7 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
         "device_id": conn.device_id,
-        "patient_id": conn.device_id,
+        "client_id": conn.client-id,
         "value": weight,
         "remarks": remarks or "",
         "type": "submit_weight_data",
@@ -119,6 +119,7 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
 
     headers = {
         "Content-Type": "application/json",
+        "version": "v1",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -132,13 +133,12 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
     )
 
     try:
-        # TODO:待完善
-        # response = requests.post(
-        #    api_url,
-        #    json=payload,
-        #     headers=headers,
-        #     timeout=timeout,
-        # )
+        response = requests.post(
+           api_url,
+           json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
 
         # 构造一个测试数据：404响应对象
         # response = MockErrorResponse()

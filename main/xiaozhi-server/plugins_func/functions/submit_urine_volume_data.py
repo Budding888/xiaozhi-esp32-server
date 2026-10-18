@@ -104,7 +104,7 @@ def submit_urine_volume_data( conn: "ConnectionHandler", urine_volume: float, re
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
         "device_id": conn.device_id,
-        "patient_id": conn.device_id,
+        "client_id": conn.client-id,
         "value": urine_volume,
         "remarks": remarks or "",
         "type": "submit_urine_volume_data",
@@ -114,6 +114,7 @@ def submit_urine_volume_data( conn: "ConnectionHandler", urine_volume: float, re
 
     headers = {
         "Content-Type": "application/json",
+        "version": "v1",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"

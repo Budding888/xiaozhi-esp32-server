@@ -200,33 +200,33 @@ plugins:
   submit_weight_data:
     description: "当用户说 '我要上报体重数据，今天的体重是XX公斤'、'今天的体重是XX公斤，请上报体重数据'、'体重是XX公斤，请上报'、'我要上报体重，体重是XX公斤'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者体重体征数据上报接口配置
-    api_url: "http://127.0.0.1:xxx"
-    api_key: "rpm-xxx"
+    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_key: "xiaole"
   submit_blood_glucose_data:
     description: "当用户说 '我要上报血糖数据，今天的血糖是xxxx mmol/L'、'今天的血糖是xxxx mmol/L，请上报血糖数据'、'今天的血糖是xxxx毫摩尔/升，请上报'、'我要上报血糖，血糖是xxxx毫摩尔/升，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:xxx"
-    api_key: "rpm-xxx"
+    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_key: "xiaole"
   submit_blood_pressure_data:
     description: "当用户说 '我要上报血压数据，今天的高压是150、低压是120'、'今天的高压是150、低压是120，请上报血压数据'、'今天的收缩压是150、舒张压是120，请上报'、'我要上报血压，血压是150、120'、'我要上报血压，血压是150/120'、'我要上报血压，血压是150和120'、'高压150，低压120，请上报'、'收缩压150，舒张压120，请上报'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:xxx"
-    api_key: "rpm-xxx"
+    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_key: "xiaole"
   submit_urine_volume_data:
     description: "当用户说 '我要上报尿量数据，今天的尿量是xxxx毫升(ml)'、'我的尿量是xxxx，请上报尿量'、'尿量xxxx毫升(ml)，请上报'、'我要上报尿量，尿量是xxxx毫升(ml)'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:xxx"
-    api_key: "rpm-xxx"
+    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_key: "xiaole"
   submit_heart_rate_data:
     description: "当用户说 '我要上报心率数据，今天的心率是xxxx次/分钟(bpm)'、'我的心率是xxxx，请上报心率'、'心率xxxx次/分钟(bpm)，请上报'、'我要上报心率，心率是xxxx次/分钟(bpm)'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "http://127.0.0.1:xxx"
-    api_key: "rpm-xxx"
+    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_key: "xiaole"
   update_medication_reminder_status:
     description: "当用户说'早上我吃了卡维地洛片, 请上报'、'中午已经服用了XXX药, 请上报'、'下午还没吃药, 请上报'、'早上的药已经吃了'等与用药状态更新相关的指令时调用此功能，更新RPM系统数据"
     # RPM患者血糖体征数据上报接口配置
     api_url: "http://127.0.0.1:xxx"
-    api_key: "rpm-xxx"
+    api_key: "xiaole"
 
 # 声纹识别配置
 voiceprint:
@@ -671,6 +671,31 @@ ASR:
     # vocabulary_id: vocab-xxx-24ee19fa8cfb4d52902170a0xxxxxxxx  # 热词ID(可选)
     # language_hints: ["zh", "en"]  # 指定语言(可选)，支持zh、en、ja、yue、ko、de、fr、ru
     output_dir: tmp/
+  AliyunBLFunAsrStream:
+    # 阿里百炼 Fun-ASR 实时流式语音识别（双向流式 WebSocket）
+    # 基于 DashScope Recognition 实时识别 API，识别传入麦克风的语音流
+    # 平台地址：https://bailian.console.aliyun.com/
+    # API Key 获取：https://bailian.console.aliyun.com/#/api-key
+    # 官方文档：https://help.aliyun.com/zh/model-studio/fun-asr-realtime
+    type: aliyunbl_funAsr_stream
+    base_websocket_api_url: wss://ws-lahnz1fxxpirg9zl.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference
+    # 必填参数
+    api_key: sk-ws-H.PEEEDYM.Qypq.MEQCIFPXjSzBpJMkYTlJBfkwKagFPikZ36q6Q0_52HFors0UAiBAtLHLQutX6Q4AuRSgorLs1iIggM2JS_z0Y5Ac2Zu0hg
+    # 模型：Fun-ASR 实时识别模型
+    model: fun-asr-flash-2026-06-15
+    # 音频格式
+    format: pcm
+    # 采样率
+    sample_rate: 16000
+    # 可选参数
+    disfluency_removal_enabled: true  # 是否过滤语气词(如"嗯"、"啊"等)
+    punctuation_prediction_enabled: true  # 是否自动添加标点符号
+    semantic_punctuation_enabled: false  # 语义断句(true:会议场景,准确;false:VAD断句,交互场景,低延迟)
+    max_sentence_silence: 200  # VAD断句静音时长阈值(ms)，范围200-6000，仅VAD断句时生效
+    multi_threshold_mode_enabled: false  # 防止VAD断句切割过长，仅VAD断句时生效
+    language_hints: ["zh", "en"]  # 指定语言(可选)，支持zh、en等
+    # vocabulary_id: vocab-xxx  # 热词ID(可选)
+    output_dir: tmp/
 
 VAD:
   SileroVAD:
@@ -684,12 +709,12 @@ LLM:
   # 所有openai类型均可以修改超参，以AliLLM为例
   # 当前支持的type为openai、dify、ollama，可自行适配
   AliLLM:
-    # 定义LLM API类型
+    # 阿里云百炼 LLM API类型
     type: openai
     # 可在这里找到你的 api_key https://bailian.console.aliyun.com/?apiKey=1#/api-key
     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-    model_name: qwen-turbo
-    api_key: 你的deepseek web key
+    model_name: qwen3.8-flash
+    api_key: sk-ws-H.PEEEDYM.Qypq.MEQCIFPXjSzBpJMkYTlJBfkwKagFPikZ36q6Q0_52HFors0UAiBAtLHLQutX6Q4AuRSgorLs1iIggM2JS_z0Y5Ac2Zu0hg
     temperature: 0.7  # 温度值
     max_tokens: 500   # 最大生成token数
     top_p: 1
@@ -1090,6 +1115,32 @@ TTS:
     # speech_rate: 0
     # pitch_rate: 0
     # language: "中文"  # 指定输出语种,如:中文、英语、日语、韩语等,请根据所选音色支持的语言进行设置,不填则默认为中文
+  AliyunBLQwenAudioTTS:
+    # 通义千问 Qwen-Audio TTS 流式语音合成（基于 DashScope SDK 单流式模式）
+    # 使用 dashscope.audio.tts_v2.SpeechSynthesizer，音频经回调实时返回并编码为 Opus 推送给设备
+    # 平台地址：https://bailian.console.aliyun.com/
+    # API Key 获取：https://bailian.console.aliyun.com/#/api-key
+    # 官方文档：https://help.aliyun.com/zh/model-studio/qwen-audio-tts
+    type: qwen_audio_tts_stream
+    output_dir: tmp/
+    # 必填参数: 你的阿里云百炼API密钥
+    api_key: sk-ws-H.PEEEDYM.Qypq.MEQCIFPXjSzBpJMkYTlJBfkwKagFPikZ36q6Q0_52HFors0UAiBAtLHLQutX6Q4AuRSgorLs1iIggM2JS_z0Y5Ac2Zu0hg
+    # 业务空间 ID（可选）
+    # workspace: 你的业务空间ID
+    # WebSocket 端点（可选）：不同地域（北京/新加坡）端点不同，不填则用 SDK 默认
+    base_websocket_api_url: wss://ws-lahnz1fxxpirg9zl.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference
+    # 模型，默认使用通义千问音频 TTS ：qwen-audio-3.0-tts-flash、qwen-audio-3.0-tts-plus
+    model: qwen-audio-3.0-tts-flash
+    # 音色，默认 longanhuan_v3.6
+    voice: longanhuan_v3.6
+    # 音频输出格式：pcm / mp3 / opus（推荐 pcm，服务端再编码为 opus 下发）
+    format: pcm
+    # 音量：0-100（默认 50）
+    volume: 50
+    # 语速：0.5-2.0（默认 1.0）
+    speech_rate: 0.8
+    # 音调：0.5-2.0（默认 1.0）
+    pitch_rate: 1.0
   AliyunStreamTTS:
     # 阿里云CosyVoice大模型流式文本语音合成
     # 采用FlowingSpeechSynthesizer接口，支持更低延迟和更自然的语音质量

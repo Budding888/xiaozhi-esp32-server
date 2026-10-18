@@ -61,6 +61,10 @@ class ListenTextMessageHandler(TextMessageHandler):
 
                 if is_wakeup_words and not enable_greeting:
                     # 如果是唤醒词，且关闭了唤醒词回复，就不用回答
+                    try:
+                        await asyncio.to_thread(conn.asr.stop_ws_connection)
+                    except Exception as e:
+                        conn.logger.bind(tag=TAG).debug(f"清理ASR会话跳过: {e}")
                     await send_stt_message(conn, original_text)
                     await send_tts_message(conn, "stop", None)
                     conn.client_is_speaking = False

@@ -109,10 +109,10 @@ def submit_blood_pressure_data( conn: "ConnectionHandler", systolic: float, dias
     now = datetime.now()
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
-        "device_id": conn.device_id,
-        "patient_id": conn.device_id,
-        "sbp_value": systolic,
-        "dbp_value": diastolic,
+        "deviceId": conn.device_id,
+        "clientId": conn.client-id,
+        "sbpValue": systolic,
+        "dbpValue": diastolic,
         "remarks": remarks or "",
         "type": "submit_blood_pressure_data",
         "source": "xiaozhi_voice_assistant",
@@ -121,6 +121,7 @@ def submit_blood_pressure_data( conn: "ConnectionHandler", systolic: float, dias
 
     headers = {
         "Content-Type": "application/json",
+        "version": "v1",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
