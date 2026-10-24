@@ -860,6 +860,12 @@ class ConnectionHandler:
         Args:
             pending_query: 被中断的原始问题文本
         """
+        # 由 config.yaml 的 enable_resume_inquiry 开关控制：关闭时不注入恢复询问提示
+        if not self.config.get("enable_resume_inquiry", True):
+            self.logger.bind(tag=TAG).debug(
+                "中断恢复询问已关闭(enable_resume_inquiry=False)，跳过恢复提示注入"
+            )
+            return
         resume_prompt = (
             f"[系统提示] 用户之前问过以下问题但回答被新问题打断了：\n"
             f"「{pending_query}」\n"
@@ -927,6 +933,12 @@ class ConnectionHandler:
         task-failed("request timeout after 23 seconds") 掐掉。
         三条恢复路径（chat / _agentscope_chat / _direct_medical_chat）共用本方法。
         """
+        # 由 config.yaml 的 enable_resume_inquiry 开关控制：关闭时不执行恢复询问
+        if not self.config.get("enable_resume_inquiry", True):
+            self.logger.bind(tag=TAG).debug(
+                "中断恢复询问已关闭(enable_resume_inquiry=False)，跳过询问 TTS"
+            )
+            return
         ask_text = (
             f"上个问题解答未完成，请问是否需要我继续为您解答"
         )
@@ -970,8 +982,17 @@ class ConnectionHandler:
 
         # 为最顶层时新建会话ID和发送FIRST请求
         if depth == 0:
+            # 中断恢复询问关闭时，清空任何残留的恢复状态，完全不进入恢复流程
+            if not self.config.get("enable_resume_inquiry", True):
+                if self._pending_resume_query or self.interrupted_queries:
+                    self._pending_resume_query = None
+                    self._pending_resume_timeout = 0
+                    self.interrupted_queries.clear()
+                    self.logger.bind(tag=TAG).debug(
+                        "中断恢复询问已关闭(enable_resume_inquiry=False)，清空恢复状态"
+                    )
             # 检测用户确认恢复（必须在 current_query 设置之前）
-            if self._pending_resume_query and query:
+            elif self._pending_resume_query and query:
                 if self._is_user_confirming(query, self._pending_resume_query):
                     self.logger.bind(tag=TAG).info(
                         f"用户确认恢复问题: {self._pending_resume_query}"

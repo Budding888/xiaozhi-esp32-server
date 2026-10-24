@@ -203,7 +203,9 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
     # 在发送 LAST 之前，检查是否有被中断的问题需要询问用户
     # 将询问文本作为 MIDDLE 消息插入，与 LAST 共用当前 sentence_id
     try:
-        if conn.interrupted_queries and not conn._pending_resume_query:
+        # 中断恢复询问由 config.yaml 的 enable_resume_inquiry 开关控制
+        if (conn.interrupted_queries and not conn._pending_resume_query
+                and conn.config.get("enable_resume_inquiry", True)):
             next_query = conn.interrupted_queries.pop(0)
             conn.logger.bind(tag=TAG).info(
                 f"医疗回答完成，检测到被中断的问题: {next_query}，准备询问用户"
@@ -239,7 +241,9 @@ def _direct_medical_and_speak(conn: "ConnectionHandler", text: str):
     # 注意：不使用 conn.executor.submit(conn.chat, None) 来询问
     # 因为 chat() 会重置 client_abort=False，导致 TTS 残留音频泄漏
     try:
-        if conn.interrupted_queries and not conn._pending_resume_query:
+        # 中断恢复询问由 config.yaml 的 enable_resume_inquiry 开关控制
+        if (conn.interrupted_queries and not conn._pending_resume_query
+                and conn.config.get("enable_resume_inquiry", True)):
             next_query = conn.interrupted_queries.pop(0)
             conn.logger.bind(tag=TAG).info(
                 f"医疗回答完成，检测到被中断的问题: {next_query}，准备询问用户"

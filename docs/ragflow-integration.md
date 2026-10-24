@@ -205,7 +205,7 @@ redis:
 ## 第五步，启动ragflow服务
 执行【启动】命令：
 ``` shell
-docker-compose -f docker-compose.yml up -d
+docker -compose -f docker-compose.yml up -d
 ```
 执行成功后，你可以使用`docker logs -n 20 -f docker-ragflow-cpu-1`命令，查看`docker-ragflow-cpu-1`服务的日志。
 如果日志中没有报错，说明ragflow服务启动成功。
@@ -213,7 +213,7 @@ docker-compose -f docker-compose.yml up -d
 
 执行【停止】命令：
 ``` shell
-docker-compose -f docker-compose.yml down
+docker -compose -f docker-compose.yml down
 ```
 
 

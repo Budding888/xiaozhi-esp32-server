@@ -3,6 +3,12 @@ import yaml
 from collections.abc import Mapping
 from config.manage_api_client import init_service, get_server_config, get_agent_models
 
+# 由本地 config.yaml 管控、智控台(manager-api)参数中不存在的服务器功能开关。
+# 从 API 拉取的配置里缺少这些键时，必须回退读取本地配置，
+# 否则代码里的 config.get(key, True) 会取默认值，导致本地开关失效
+# （例如 enable_resume_inquiry 设为 false 仍会触发「中断恢复询问」）。
+LOCAL_ONLY_CONFIG_KEYS = ("enable_resume_inquiry",)
+
 
 def get_project_dir():
     """获取项目根目录"""
@@ -13,6 +19,33 @@ def read_config(config_path):
     with open(config_path, "r", encoding="utf-8") as file:
         config = yaml.safe_load(file)
     return config
+
+
+def _as_bool(value, default=False):
+    """把配置值安全转换为布尔（兼容 "false"/"0"/"no" 等字符串形式）"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _merge_local_only_switches(config_data, custom_config):
+    """把智控台(manager-api)不管理的本地开关合并进远程配置。
+
+    远程配置里缺失的本地专属开关，回退读取自定义配置(data/.config.yaml)，
+    再回退默认配置(config.yaml)，并统一转换为布尔值。
+    避免代码中的 config.get(key, True) 因缺键而误取默认值。
+    """
+    local_defaults = read_config(get_project_dir() + "config.yaml") or {}
+    for key in LOCAL_ONLY_CONFIG_KEYS:
+        value = config_data.get(key)
+        if value is None:
+            value = custom_config.get(key)
+        if value is None:
+            value = local_defaults.get(key)
+        if value is not None:
+            config_data[key] = _as_bool(value)
 
 
 def load_config():
@@ -98,6 +131,8 @@ async def get_config_from_api_async(config):
     # 如果服务器没有prompt_template，则从本地配置读取
     if not config_data.get("prompt_template"):
         config_data["prompt_template"] = config.get("prompt_template")
+    # 本地专属开关回退：远程配置缺键时以本地配置为准
+    _merge_local_only_switches(config_data, config)
     return config_data
 
 

@@ -3,10 +3,10 @@
 用户通过语音上报体重数据，调用外部系统的体重更新API接口完成数据记录
 """
 from datetime import datetime
-from http.client import HTTPResponse
+import os
 
 import requests
-from aiohttp.web_exceptions import HTTPSuccessful
+import yaml
 
 from config.logger import setup_logging
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
@@ -18,6 +18,37 @@ if TYPE_CHECKING:
 TAG = __name__
 logger = setup_logging()
 
+PLUGIN_NAME = "submit_weight_data"
+
+
+def _get_effective_plugin_config(conn: "ConnectionHandler") -> dict:
+    """获取插件配置。
+
+    运行时配置（智控台下放）优先；但智控台常只配置了部分字段（如仅 url，缺少 api_key）。
+    缺失的 api_url/api_key 回退到本地 config.yaml 中的插件配置，避免命中默认占位地址
+    （https://rpm.com/api/submitWeight）导致上报失败。
+    """
+    effective = conn.config.get("plugins", {}).get(PLUGIN_NAME, {})
+    if not isinstance(effective, dict):
+        effective = {}
+
+    local = {}
+    try:
+        project_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        with open(
+            os.path.join(project_dir, "config.yaml"), "r", encoding="utf-8"
+        ) as f:
+            local = yaml.safe_load(f).get("plugins", {}).get(PLUGIN_NAME, {}) or {}
+    except Exception as e:
+        logger.bind(tag=TAG).warning(f"读取本地 config.yaml 插件配置失败: {e}")
+
+    merged = dict(local)
+    # 运行时（智控台）配置覆盖本地配置，保证智控台仍拥有最高优先级
+    merged.update(effective)
+    return merged
+
 submit_weight_data_function_desc = {
     "type": "function",
     "function": {
@@ -25,7 +56,7 @@ submit_weight_data_function_desc = {
         "description": (
             "用于用户上报体重数据。"
             "当用户说'我要上报体重数据，今天的体重是XX公斤'、'今天的体重是XX公斤，请上报体重数据'、'今天的体重是XX公斤，请上报'、'我要上报体重，体重是XX公斤'等与体重记录与上报相关的指令时调用此功能。"
-            "注意：1.如果用户说的体重单位是斤或磅，需转换为公斤后再上报。如果用户说的体重没有单位，单位就默认公斤。2.上报、提交、登记、报上去、提交一下、上报一下、帮我提交、帮我上报、反馈一下、记录、录入、保存、记下来、存一下、帮我记下、录入进去、保存一下等均是同义词。"
+            "注意：1.如果用户说的体重单位是斤或磅，需转换为公斤后再上报。如果用户说的体重没有单位，单位就默认公斤。2.上报、提交、登记、上传、报上去、提交一下、上报一下、帮我提交、帮我上报、反馈一下、记录、录入、保存、记下来、存一下、帮我记下、录入进去、保存一下等均是同义词。"
         ),
         "parameters": {
             "type": "object",
@@ -75,9 +106,8 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
             response=f"您上报的体重数值{weight}公斤看起来不太合理，请确认后重新上报",
         )
 
-    # 从config.yaml文件的插件配置中读取外部API信息
-    plugin_config = conn.config.get("plugins", {}).get("submit_weight_data", {})
-    # logger.bind(tag=TAG).info(f"-----------conn.config.get(plugins)----------：{conn.config.get('plugins', {})}")
+    # 读取插件配置：运行时(智控台)配置优先，缺失字段回退到本地 config.yaml
+    plugin_config = _get_effective_plugin_config(conn)
     if not plugin_config:
         logger.bind(tag=TAG).info("插件配置参数未配置，请检查")
         return ActionResponse(
@@ -85,8 +115,9 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
             response="插件配置参数未配置，请联系管理员完善设置"
         )
 
-    api_url = plugin_config.get("api_url", "https://rpm.com/api/submitWeight")
-    api_key = plugin_config.get("api_key", "XXX")
+    # 兼容智控台中配置为 url 而非 api_url 的情况
+    api_url = plugin_config.get("api_url") or plugin_config.get("url")
+    api_key = plugin_config.get("api_key")
     timeout = plugin_config.get("timeout", 20)
     use_mock = plugin_config.get("use_mock", False)
 
@@ -95,21 +126,16 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
         logger.bind(tag=TAG).info("体重上报API地址未正确配置，请检查")
         return ActionResponse(
             action=Action.RESPONSE, result=None,
+
             response="体重数据上报API地址暂未配置，请联系管理员完善设置"
-        )
-    if not api_key:
-        logger.bind(tag=TAG).info("体重上报API key未正确配置，请检查")
-        return ActionResponse(
-            action=Action.RESPONSE, result=None,
-            response="体重数据上报API key暂未配置，请联系管理员完善设置"
         )
 
     # 构建请求数据
     now = datetime.now()
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
-        "device_id": conn.device_id,
-        "client_id": conn.client-id,
+        "deviceId": conn.device_id,
+        "clientId": conn.client_id,
         "value": weight,
         "remarks": remarks or "",
         "type": "submit_weight_data",
@@ -139,10 +165,6 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
             headers=headers,
             timeout=timeout,
         )
-
-        # 构造一个测试数据：404响应对象
-        # response = MockErrorResponse()
-        response = MockSuccessResponse()
 
         # 校验响应的状态，存在错误码，则返回错误信息
         response.raise_for_status()
@@ -192,47 +214,6 @@ def submit_weight_data( conn: "ConnectionHandler", weight: float, remarks: str =
             response="体重数据上报失败，请稍后再试",
         )
 
-
-from requests.exceptions import HTTPError
-
-# 模拟 404 错误响应
-class MockErrorResponse:
-    def __init__(self, status_code=404, reason="Not Found", url=""):
-        self.status_code = status_code
-        self.reason = reason
-        self.url = url
-        self.text = f"{status_code} {reason}"
-        self.content = self.text.encode("utf-8")
-        self.headers = {}
-        self.encoding = "utf-8"
-
-    def json(self):
-        return {"error": self.reason, "code": self.status_code}
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise HTTPError(
-                f"{self.status_code} Client Error: {self.reason} for url: {self.url}",
-                response=self
-            )
-
-# 模拟 200 成功响应
-class MockSuccessResponse:
-    def __init__(self, url=""):
-        self.status_code = 200
-        self.reason = "OK"
-        self.url = url
-        self.text = '{"code":200,"message":"体重数据上报成功"}'
-        self.content = self.text.encode("utf-8")
-        self.headers = {}
-        self.encoding = "utf-8"
-
-    def json(self):
-        return {"code": 200, "message": "体重数据上报成功"}
-
-    def raise_for_status(self):
-        # 200 不抛异常，符合 requests 原生行为
-        pass
 
 """处理mock响应，模拟外部API返回"""
 def _handle_mock_response(conn, weight, date_time_str, remarks):

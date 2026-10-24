@@ -3,7 +3,11 @@
 用户通过语音上报尿量数据，调用外部系统的尿量更新API接口完成数据记录
 """
 from datetime import datetime
+import os
+
 import requests
+import yaml
+
 from config.logger import setup_logging
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
 from typing import TYPE_CHECKING
@@ -14,6 +18,66 @@ if TYPE_CHECKING:
 TAG = __name__
 logger = setup_logging()
 
+PLUGIN_NAME = "submit_urine_volume_data"
+
+# 命中这些关键字的 api_url 视为未正确配置的占位地址（智控台常下放此类默认值）
+_PLACEHOLDER_MARKERS = (
+    "rpm.com",
+    "weight.submit",
+    "submitBloodGlucose",
+    "submitWeight",
+    "submitHeartRate",
+    "submitUrine",
+    "submitblood_glucose",
+    "submitheart_rate",
+    "submiturine_volume",
+    "你的",
+    "xxx",
+)
+
+
+def _is_placeholder_url(url) -> bool:
+    """判断 api_url 是否为占位/未正确配置地址"""
+    if not url or not isinstance(url, str):
+        return True
+    low = url.lower()
+    return any(m in low for m in _PLACEHOLDER_MARKERS)
+
+
+def _get_effective_plugin_config(conn: "ConnectionHandler") -> dict:
+    """获取插件配置。
+
+    运行时配置（智控台下放）优先；但当智控台只下放了占位地址/缺少 api_key 时，
+    回退到本地 config.yaml 中的插件配置，避免命中默认占位地址导致上报失败。
+    """
+    effective = conn.config.get("plugins", {}).get(PLUGIN_NAME, {})
+    if not isinstance(effective, dict):
+        effective = {}
+
+    local = {}
+    try:
+        project_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        with open(
+            os.path.join(project_dir, "config.yaml"), "r", encoding="utf-8"
+        ) as f:
+            local = yaml.safe_load(f).get("plugins", {}).get(PLUGIN_NAME, {}) or {}
+    except Exception as e:
+        logger.bind(tag=TAG).warning(f"读取本地 config.yaml 插件配置失败: {e}")
+
+    merged = dict(local)
+    # 运行时（智控台）配置覆盖本地配置；但占位/无效的 url 与缺失的 api_key 不覆盖
+    for key in ("api_url", "url"):
+        if key in effective and not _is_placeholder_url(effective.get(key)):
+            merged[key] = effective[key]
+    if effective.get("api_key"):
+        merged["api_key"] = effective["api_key"]
+    for key, value in effective.items():
+        if key not in ("api_url", "url", "api_key"):
+            merged[key] = value
+    return merged
+
 submit_urine_volume_data_function_desc = {
     "type": "function",
     "function": {
@@ -21,7 +85,7 @@ submit_urine_volume_data_function_desc = {
         "description": (
             "用于用户上报尿量数据。"
             "用户者说'我要上报尿量数据，今天的尿量是xxxx毫升(ml)'、'我的尿量是xxxx毫升，请上报尿量'、'尿量xxxx毫升(ml)，请上报'、'我要上报尿量，尿量是xxxx毫升(ml)'等与尿量记录与上报相关的指令时调用此功能。"
-            "注意：上报、提交、登记、报上去、提交一下、上报一下、帮我提交、帮我上报、反馈一下、记录、录入、保存、记下来、存一下、帮我记下、录入进去、保存一下等均是同义词。"
+            "注意：上报、提交、上传、登记、报上去、提交一下、上报一下、帮我提交、帮我上报、反馈一下、记录、录入、保存、记下来、存一下、帮我记下、录入进去、保存一下等均是同义词。"
         ),
         "parameters": {
             "type": "object",
@@ -73,38 +137,33 @@ def submit_urine_volume_data( conn: "ConnectionHandler", urine_volume: float, re
             response=f"您上报的尿量数值{urine_volume}看起来不太合理，请确认后重新上报",
         )
 
-    # 从config.yaml文件的插件配置中读取外部API信息
-    plugin_config = conn.config.get("plugins", {}).get("submit_urine_volume_data", {})
-    api_url = plugin_config.get("api_url", "https://rpm.com/api/submiturine_volume")
-    api_key = plugin_config.get("api_key", "XXX")
-    timeout = plugin_config.get("timeout", 20)
-    use_mock = plugin_config.get("use_mock", True)
-
+    # 读取插件配置：运行时(智控台)配置优先，占位/缺失字段回退到本地 config.yaml
+    plugin_config = _get_effective_plugin_config(conn)
     if not plugin_config:
         logger.bind(tag=TAG).info("插件配置参数未配置，请检查")
         return ActionResponse(
             action=Action.RESPONSE, result=None,
             response="插件配置参数未配置，请联系管理员完善设置"
         )
-    if not api_url:
+
+    api_url = plugin_config.get("api_url") or plugin_config.get("url")
+    api_key = plugin_config.get("api_key")
+    timeout = plugin_config.get("timeout", 20)
+    use_mock = plugin_config.get("use_mock", False)
+
+    if not api_url or _is_placeholder_url(api_url):
         logger.bind(tag=TAG).info("尿量上报API地址未正确配置，请检查")
         return ActionResponse(
             action=Action.RESPONSE, result=None,
             response="尿量数据上报API地址暂未配置，请联系管理员完善设置"
-        )
-    if not api_key:
-        logger.bind(tag=TAG).info("尿量上报API key未正确配置，请检查")
-        return ActionResponse(
-            action=Action.RESPONSE, result=None,
-            response="尿量数据上报API key暂未配置，请联系管理员完善设置"
         )
 
     # 构建请求数据
     now = datetime.now()
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
-        "device_id": conn.device_id,
-        "client_id": conn.client-id,
+        "deviceId": conn.device_id,
+        "clientId": conn.client_id,
         "value": urine_volume,
         "remarks": remarks or "",
         "type": "submit_urine_volume_data",
@@ -218,7 +277,7 @@ def _build_success_response(urine_volume, date_time_str, remarks, api_result):
     """构建上报成功后的LLM结果文本"""
     result_text = (
         f"用户尿量数据已成功上报。\n"
-        f"尿量: {urine_volume}公斤\n"
+        f"尿量: {urine_volume}毫升\n"
         f"上报时间: {date_time_str}\n"
     )
     if remarks:

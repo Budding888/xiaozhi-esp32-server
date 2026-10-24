@@ -14,12 +14,20 @@ async def handleAbortMessage(conn: "ConnectionHandler"):
     conn.logger.bind(tag=TAG).info("Abort message received")
 
     # 保存被中断的问题到队列，供 chat() 完成后询问用户是否恢复
+    # 由 config.yaml 的 enable_resume_inquiry 开关控制：关闭时不做「中断恢复询问」
+    enable_resume_inquiry = conn.config.get("enable_resume_inquiry", True)
     if conn.current_query:
-        conn.interrupted_queries.append(conn.current_query)
-        conn.logger.bind(tag=TAG).info(
-            f"保存被中断的问题到恢复队列: {conn.current_query}, "
-            f"当前队列长度: {len(conn.interrupted_queries)}"
-        )
+        if enable_resume_inquiry:
+            conn.interrupted_queries.append(conn.current_query)
+            conn.logger.bind(tag=TAG).info(
+                f"保存被中断的问题到恢复队列: {conn.current_query}, "
+                f"当前队列长度: {len(conn.interrupted_queries)}"
+            )
+        else:
+            conn.logger.bind(tag=TAG).debug(
+                f"中断恢复询问已关闭(enable_resume_inquiry=False)，不保存被中断的问题: "
+                f"{conn.current_query}"
+            )
     else:
         conn.logger.bind(tag=TAG).debug(
             "current_query 为空，跳过保存被中断的问题"

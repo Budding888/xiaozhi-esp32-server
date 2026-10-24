@@ -37,3 +37,5 @@ See [Configuration Reference](https://cli.vuejs.org/config/).
 #### 密码： Admin1234
 
 ### 注意：如果忘记密码，将sys_user表中对应的用户数据删除，重新刷新登录页面即可重新添加用户
+请认真测试下 D:\javaWorkSpace\xiaozhi-esp32-server\main\xiaozhi-server\core\providers\asr\aliyunbl_funAsr_stream.py、D:\javaWorkSpace\xiaozhi-esp32-server\main\xiaozhi-server\core\providers\tts\qwen_audio_tts_stream.py功能，目前这2个功能在一起使用的时候存在报错：[core.providers.tts.qwen_audio_tts_stream]-WARNING-TTS合成器不存在，正在重建会话后继续发送文本,261013 11:40:58[0.9.2-00000000000000][core.providers.tts.qwen_audio_tts_stream]-ERROR-语音合成出现异常: {"header":{"task_id":"6e0872a626f44eb2b098c2042a4b7e2c","event":"task-failed","error_code":"InvalidParameter","error_message":"request timeout after 23           
+seconds."},"payload":{}}

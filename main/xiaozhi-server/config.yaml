@@ -71,11 +71,13 @@ enable_wakeup_words_response_cache: true
 # 开场是否回复唤醒词
 enable_greeting: true
 # 说完话是否开启提示音
-enable_stop_tts_notify: false
+enable_stop_tts_notify: true
 # 说完话是否开启提示音，音效地址
 stop_tts_notify_voice: "config/assets/tts_notify.mp3"
 # 是否启用WebSocket心跳保活机制
 enable_websocket_ping: false
+# 是否启用「中断恢复询问」功能：对话被打断后，主动询问用户是否继续解答被打断的问题
+enable_resume_inquiry: false
 
 
 # TTS音频发送延迟配置
@@ -200,27 +202,32 @@ plugins:
   submit_weight_data:
     description: "当用户说 '我要上报体重数据，今天的体重是XX公斤'、'今天的体重是XX公斤，请上报体重数据'、'体重是XX公斤，请上报'、'我要上报体重，体重是XX公斤'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者体重体征数据上报接口配置
-    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    # api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_url: "http://192.168.110.146:8083/api/patient/vitalSign/submitVitalSignDataXiaole"
     api_key: "xiaole"
   submit_blood_glucose_data:
     description: "当用户说 '我要上报血糖数据，今天的血糖是xxxx mmol/L'、'今天的血糖是xxxx mmol/L，请上报血糖数据'、'今天的血糖是xxxx毫摩尔/升，请上报'、'我要上报血糖，血糖是xxxx毫摩尔/升，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    # api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_url: "http://192.168.110.146:8083/api/patient/vitalSign/submitVitalSignDataXiaole"
     api_key: "xiaole"
   submit_blood_pressure_data:
     description: "当用户说 '我要上报血压数据，今天的高压是150、低压是120'、'今天的高压是150、低压是120，请上报血压数据'、'今天的收缩压是150、舒张压是120，请上报'、'我要上报血压，血压是150、120'、'我要上报血压，血压是150/120'、'我要上报血压，血压是150和120'、'高压150，低压120，请上报'、'收缩压150，舒张压120，请上报'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    # api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_url: "http://192.168.110.146:8083/api/patient/vitalSign/submitVitalSignDataXiaole"
     api_key: "xiaole"
   submit_urine_volume_data:
     description: "当用户说 '我要上报尿量数据，今天的尿量是xxxx毫升(ml)'、'我的尿量是xxxx，请上报尿量'、'尿量xxxx毫升(ml)，请上报'、'我要上报尿量，尿量是xxxx毫升(ml)'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    # api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_url: "http://192.168.110.146:8083/api/patient/vitalSign/submitVitalSignDataXiaole"
     api_key: "xiaole"
   submit_heart_rate_data:
     description: "当用户说 '我要上报心率数据，今天的心率是xxxx次/分钟(bpm)'、'我的心率是xxxx，请上报心率'、'心率xxxx次/分钟(bpm)，请上报'、'我要上报心率，心率是xxxx次/分钟(bpm)'，调用本方法，将患者数据上报到RPM系统"
     # RPM患者血糖体征数据上报接口配置
-    api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    # api_url: "https://api.renalysis.com.cn/api/patient/vitalSign/submitVitalSignDataXiaole"
+    api_url: "http://192.168.110.146:8083/api/patient/vitalSign/submitVitalSignDataXiaole"
     api_key: "xiaole"
   update_medication_reminder_status:
     description: "当用户说'早上我吃了卡维地洛片, 请上报'、'中午已经服用了XXX药, 请上报'、'下午还没吃药, 请上报'、'早上的药已经吃了'等与用药状态更新相关的指令时调用此功能，更新RPM系统数据"

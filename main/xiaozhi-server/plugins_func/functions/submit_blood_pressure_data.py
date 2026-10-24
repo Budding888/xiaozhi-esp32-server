@@ -3,10 +3,10 @@
 用户通过语音上报血压数据，调用外部系统的血压更新API接口完成数据记录
 """
 from datetime import datetime
-from http.client import HTTPResponse
+import os
 
 import requests
-from aiohttp.web_exceptions import HTTPSuccessful
+import yaml
 
 from config.logger import setup_logging
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
@@ -18,6 +18,66 @@ if TYPE_CHECKING:
 TAG = __name__
 logger = setup_logging()
 
+PLUGIN_NAME = "submit_blood_pressure_data"
+
+# 命中这些关键字的 api_url 视为未正确配置的占位地址（智控台常下放此类默认值）
+_PLACEHOLDER_MARKERS = (
+    "rpm.com",
+    "weight.submit",
+    "submitBloodGlucose",
+    "submitWeight",
+    "submitHeartRate",
+    "submitUrine",
+    "submitblood_glucose",
+    "submitheart_rate",
+    "submiturine_volume",
+    "你的",
+    "xxx",
+)
+
+
+def _is_placeholder_url(url) -> bool:
+    """判断 api_url 是否为占位/未正确配置地址"""
+    if not url or not isinstance(url, str):
+        return True
+    low = url.lower()
+    return any(m in low for m in _PLACEHOLDER_MARKERS)
+
+
+def _get_effective_plugin_config(conn: "ConnectionHandler") -> dict:
+    """获取插件配置。
+
+    运行时配置（智控台下放）优先；但当智控台只下放了占位地址/缺少 api_key 时，
+    回退到本地 config.yaml 中的插件配置，避免命中默认占位地址导致上报失败。
+    """
+    effective = conn.config.get("plugins", {}).get(PLUGIN_NAME, {})
+    if not isinstance(effective, dict):
+        effective = {}
+
+    local = {}
+    try:
+        project_dir = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        )
+        with open(
+            os.path.join(project_dir, "config.yaml"), "r", encoding="utf-8"
+        ) as f:
+            local = yaml.safe_load(f).get("plugins", {}).get(PLUGIN_NAME, {}) or {}
+    except Exception as e:
+        logger.bind(tag=TAG).warning(f"读取本地 config.yaml 插件配置失败: {e}")
+
+    merged = dict(local)
+    # 运行时（智控台）配置覆盖本地配置；但占位/无效的 url 与缺失的 api_key 不覆盖
+    for key in ("api_url", "url"):
+        if key in effective and not _is_placeholder_url(effective.get(key)):
+            merged[key] = effective[key]
+    if effective.get("api_key"):
+        merged["api_key"] = effective["api_key"]
+    for key, value in effective.items():
+        if key not in ("api_url", "url", "api_key"):
+            merged[key] = value
+    return merged
+
 submit_blood_pressure_data_function_desc = {
     "type": "function",
     "function": {
@@ -25,7 +85,7 @@ submit_blood_pressure_data_function_desc = {
         "description": (
             "用于用户上报血压数据"
             "用户者说'我要上报血压数据，今天的高压是150、低压是120'、'下机后高压是150、低压是120，请上报血压数据'、'上机前收缩压是150、舒张压是120，请上报'、'我要上报血压，下午血压是150、120'、'我要上报血压，血压是150/120'、'我要上报血压，血压是150和120'、'高压150，低压120，请上报'、'收缩压150，舒张压120，请上报'等与血压记录与上报相关的指令时调用此功能。"
-            "注意：1.如果用户说的血压没有明确高压与低压时，将数值大的识别为高压/收缩压/上压，数值小识别为低压/舒张压/下压。2.上报、提交、登记、报上去、提交一下、上报一下、帮我提交、帮我上报、反馈一下、记录、录入、保存、记下来、存一下、帮我记下、录入进去、保存一下等均是同义词。"
+            "注意：1.如果用户说的血压没有明确高压与低压时，将数值大的识别为高压/收缩压/上压，数值小识别为低压/舒张压/下压。2.上报、提交、登记、上传、报上去、提交一下、上报一下、帮我提交、帮我上报、反馈一下、记录、录入、保存、记下来、存一下、帮我记下、录入进去、保存一下等均是同义词。"
         ),
         "parameters": {
             "type": "object",
@@ -80,29 +140,24 @@ def submit_blood_pressure_data( conn: "ConnectionHandler", systolic: float, dias
             response=f"您上报的血压数值看起来不太合理，请先明确指出哪个是高压、哪个是低压，再重新上报",
         )
 
-    # 从config.yaml文件的插件配置中读取外部API信息
-    plugin_config = conn.config.get("plugins", {}).get("submit_blood_pressure_data", {})
-    api_url = plugin_config.get("api_url", "https://rpm.com/api/submitWeight")
-    api_key = plugin_config.get("api_key", "XXX")
-    timeout = plugin_config.get("timeout", 20)
-
+    # 读取插件配置：运行时(智控台)配置优先，占位/缺失字段回退到本地 config.yaml
+    plugin_config = _get_effective_plugin_config(conn)
     if not plugin_config:
         logger.bind(tag=TAG).info("插件配置参数未配置，请检查")
         return ActionResponse(
             action=Action.RESPONSE, result=None,
             response="插件配置参数未配置，请联系管理员完善设置"
         )
-    if not api_url:
+
+    api_url = plugin_config.get("api_url") or plugin_config.get("url")
+    api_key = plugin_config.get("api_key")
+    timeout = plugin_config.get("timeout", 20)
+
+    if not api_url or _is_placeholder_url(api_url):
         logger.bind(tag=TAG).info("血压上报API地址未正确配置，请检查")
         return ActionResponse(
             action=Action.RESPONSE, result=None,
             response="血压数据上报API地址暂未配置，请联系管理员完善设置"
-        )
-    if not api_key:
-        logger.bind(tag=TAG).info("血压上报API key未正确配置，请检查")
-        return ActionResponse(
-            action=Action.RESPONSE, result=None,
-            response="血压数据上报API key暂未配置，请联系管理员完善设置"
         )
 
     # 构建请求数据
@@ -110,7 +165,7 @@ def submit_blood_pressure_data( conn: "ConnectionHandler", systolic: float, dias
     date_time_str=now.strftime("%Y-%m-%d %H:%M:%S")
     payload = {
         "deviceId": conn.device_id,
-        "clientId": conn.client-id,
+        "clientId": conn.client_id,
         "sbpValue": systolic,
         "dbpValue": diastolic,
         "remarks": remarks or "",
@@ -131,17 +186,12 @@ def submit_blood_pressure_data( conn: "ConnectionHandler", systolic: float, dias
     )
 
     try:
-        # TODO:待完善
-        # response = requests.post(
-        #    api_url,
-        #    json=payload,
-        #     headers=headers,
-        #     timeout=timeout,
-        # )
-
-        # 构造一个测试数据：404响应对象
-        # response = MockErrorResponse()
-        response = MockSuccessResponse()
+        response = requests.post(
+            api_url,
+            json=payload,
+            headers=headers,
+            timeout=timeout,
+        )
 
         # 校验响应的状态，存在错误码，则返回错误信息
         response.raise_for_status()
@@ -190,48 +240,6 @@ def submit_blood_pressure_data( conn: "ConnectionHandler", systolic: float, dias
             result=None,
             response="血压数据上报失败，请稍后再试",
         )
-
-
-from requests.exceptions import HTTPError
-
-# 模拟 404 错误响应
-class MockErrorResponse:
-    def __init__(self, status_code=404, reason="Not Found", url=""):
-        self.status_code = status_code
-        self.reason = reason
-        self.url = url
-        self.text = f"{status_code} {reason}"
-        self.content = self.text.encode("utf-8")
-        self.headers = {}
-        self.encoding = "utf-8"
-
-    def json(self):
-        return {"error": self.reason, "code": self.status_code}
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise HTTPError(
-                f"{self.status_code} Client Error: {self.reason} for url: {self.url}",
-                response=self
-            )
-
-# 模拟 200 成功响应
-class MockSuccessResponse:
-    def __init__(self, url=""):
-        self.status_code = 200
-        self.reason = "OK"
-        self.url = url
-        self.text = '{"code":200,"message":"血压数据上报成功"}'
-        self.content = self.text.encode("utf-8")
-        self.headers = {}
-        self.encoding = "utf-8"
-
-    def json(self):
-        return {"code": 200, "message": "血压数据上报成功"}
-
-    def raise_for_status(self):
-        # 200 不抛异常，符合 requests 原生行为
-        pass
 
 
 def build_success_response(systolic, diastolic, date_time_str, remarks, api_result):
