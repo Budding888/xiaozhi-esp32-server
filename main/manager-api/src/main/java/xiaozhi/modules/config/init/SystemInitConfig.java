@@ -12,7 +12,8 @@ import xiaozhi.modules.config.service.ConfigService;
 import xiaozhi.modules.sys.service.SysParamsService;
 
 @Configuration
-@DependsOn("liquibase")
+// prod环境下 项目启动报错，暂时注释掉
+//@DependsOn("liquibase")
 public class SystemInitConfig {
 
     @Autowired

@@ -35,9 +35,14 @@ class TTSMessageDTO:
         content_detail: Optional[str] = None,
         # 如果内容类型为文件，则需要传入文件路径
         content_file: Optional[str] = None,
+        # 提交该条文本后立即结束当前合成任务，使这条文本独立成句。
+        # 用于「进度播报」这类短句：流式 TTS 服务端会把连续提交的多条短文本
+        # 合并成一句朗读（字幕也只剩一条），必须显式断任务才能分开。
+        flush: bool = False,
     ):
         self.sentence_id = sentence_id
         self.sentence_type = sentence_type
         self.content_type = content_type
         self.content_detail = content_detail
         self.content_file = content_file
+        self.flush = flush

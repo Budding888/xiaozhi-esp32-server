@@ -8,11 +8,15 @@ knife4j:
   setting:
     enableFooter: false
 spring:
+  liquibase:
+    change-log: classpath:db/db.changelog-master.yaml
+    # prod环境下 项目启动报错，暂时注释掉
+    enabled: false
   datasource:
     druid:
       #MySQL
       driver-class-name: com.mysql.cj.jdbc.Driver
-      url: jdbc:mysql://8.145.44.148:3308/xiaole_esp32_server_20261022?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true
+      url: jdbc:mysql://8.145.44.148:3308/xiaole_esp32_server?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&nullCatalogMeansCurrent=true
       username: xiaole_esp32_server_20261022
       password: opkcsD#Qhx8f9n7Ar@UElSermlL10yG*Vfm1xRKjLbwdylp9SxFOw24uU8nB9uvy3x
       initial-size: 10

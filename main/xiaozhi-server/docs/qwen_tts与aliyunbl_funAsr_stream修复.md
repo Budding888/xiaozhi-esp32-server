@@ -377,5 +377,222 @@
       alibl_stream、aliyun_stream、huoshan_double_stream 等其它流式 TTS；
       其中 aliyun_stream 在打断时仅 continue、连 cancel 都没有。若换用这些
       provider，可能出现同样的 23s 孤儿。当前用户使用 qwen，故只修 qwen。
-    - 更彻底的做法是在 abortHandle 里显式取消会话（provider 提供 cancel_session
-      时调用），可一处覆盖多 provider；但会引入跨模块契约，本次未采用。
+  备注（同类风险，未在本次范围）
+    - 同样的「只在取到消息时检查打断」模式存在于 xunfei_stream、
+      alibl_stream、aliyun_stream、huoshan_double_stream 等其它流式 TTS；
+
+
+------------------------------------------------
+
+进度播报被连读成一句 + 23s task-failed（完整优化过程）
+
+  一、现象与要求
+    用户复现日志（16:37:31 ~ 16:37:57）：
+
+      16:37:31  发送第一段语音: 好的。很高兴为您服务。
+      16:37:32  发送音频消息: SentenceType.FIRST, 正在为您查询 腹透患者饮食注意事项，……
+      16:37:34  发送音频消息: SentenceType.FIRST, 开始进行综合搜索。正在搜索知识库。正在搜索大模型。
+      16:37:57  语音合成出现异常: task-failed "request timeout after 23 seconds"
+
+    要求：三条进度播报必须各自独立输出，不能合并成一句话；同时消除
+    23 秒超时报错。
+
+  二、根因（用真实 DashScope 做对照实验证实，不是推测）
+    问题 1 —— 短文本被服务端合并
+      同一合成任务上连续提交的多条「短文本」会被服务端合并成一个合成
+      单元，只发一次 sentence-begin。对照组（flush=False）实测：
+
+        SERVER_BEGIN '开始进行综合搜索。'
+        SERVER_BEGIN '正在搜索知识库。正在搜索大模型。'   ← 两条被合并
+
+      客户端字幕完全由该事件驱动（见上一节「字幕改由服务端句首事件
+      驱动」），于是文字与语音一起被合并。这不是显示问题，服务端确实
+      只合成了一句。
+
+      因此此前尝试过的「插件层 sleep 1.2s」方案无效——服务端不按时间
+      断句，只按任务边界断句。tests/test_progress_tts_pacing.py 测的
+      _pace_progress_gap 也已随方案废弃而删除。
+
+    问题 2 —— 空闲看门狗
+      任务长时间没有新文本时会被服务端空闲看门狗掐断（23 秒）。医疗
+      问答在进度播报后要等 RAG 检索 + 医疗大模型推理 30 秒以上，期间
+      没有任何新文本，必然触发。
+
+      两个问题独立但同源：都源于「一个长会话被用来承载跨越 30 秒的
+      多段不连续文本」。
+
+  三、方案演进
+    第一版（已废弃）：插件层加 sleep 拉开间距
+      → 实测无效，服务端不按时间断句。
+
+    第二版（已废弃）：TTS 层在句间补 0.6s 静音 PCM
+      → 能让音频不连读，但字幕仍由服务端 sentence-begin 驱动，文字
+        依然合并；且补静音无法阻止 23s 看门狗。
+
+    最终方案：flush 断任务
+      每条需要独立成句的文本（进度播报）提交后立即结束当前合成任务，
+      下一句自然开启新任务。服务端因此以这条文本为边界单独合成、单独
+      发 sentence-begin——语音和字幕同时被拆开，且任务不会长时间空闲。
+
+  四、实现（5 个文件）
+
+      文件                                                 改动
+      ──────────────────────────────────────────────────── ──────────────────────────────
+      core/providers/tts/dto/dto.py                        TTSMessageDTO 增加 flush 字段
+      core/providers/tts/qwen_audio_tts_stream.py          核心：断任务 + 看门狗 + 代次
+      plugins_func/functions/search_medical_question.py    进度播报带 flush=True
+      core/agentscope/rag/search.py                        同上
+      core/agents/medical_pipeline.py                      同上（AgentScope 模式）
+
+    flush 字段语义
+      TTSMessageDTO.flush = True 表示「提交这条文本后立即结束当前合成
+      任务」。默认 False，对其它 provider 完全无影响（追加在参数末尾、
+      有默认值；core/ 中所有构造点均使用关键字参数）。
+
+    flush 文本的处理流程（qwen provider）
+      1. 客户端先下发这条字幕（_emit_caption_sentence），它会排在该句
+         音频之前入队；
+      2. 提交文本给 SDK（streaming_call），同时置 _suppress_caption_gen
+         屏蔽该任务的服务端句首事件，避免字幕重复；
+      3. _finish_current_task_quietly()：下发 FINISH → 等 on_complete
+         → 关闭 ws，但**不下发 LAST**（本轮对话尚未结束）；
+      4. 下一条文本到达时，text_to_speak() 发现 synthesizer 为 None，
+         透明重建会话。
+
+    空闲看门狗
+      tts_text_priority_thread 的 queue.Empty 分支中，若当前任务已空闲
+      超过 TTS_IDLE_FINISH_SECONDS（15s），同样主动收尾（不发 LAST）。
+      这是第二道防线：即使某处漏标 flush，也不会撑到 23s 被服务端判死。
+
+    故障自愈
+      _on_tts_error 置 _session_broken，下一次提交文本时重建会话。此前
+      任务被判死后，后续文本会一直撞在已失效的任务上被静默丢弃，表现为
+      「有字幕没声音」。
+
+    任务代次 _task_generation（关键正确性设计）
+      SDK 回调运行在 DashScope 自己的线程上，是异步到达的。上一个任务
+      迟到的 on_complete / on_error / sentence-begin 若不加区分，会：
+        · 误发 LAST（整段回答被截断）；
+        · 误唤醒新会话的等待者（丢尾部音频）；
+        · 误判新会话损坏（多余重建）；
+        · 重复下发字幕。
+      因此每次 start_session 与 _close_synthesizer 都自增代次，所有回调
+      闭包携带自己的代次，与当前代次不符即丢弃。「主动收尾」「字幕已
+      下发」同样按代次记录（_quiet_finish_gen / _suppress_caption_gen），
+      而不是全局布尔标志——第一版用的就是布尔标志，自审时发现有竞态
+      （迟到的回调会读到已复位的标志），已改为代次。
+
+  五、真实链路验证
+    使用 manager-api 中该设备实际生效的配置（不是 config.yaml）：
+      TTS_AliBLQwenAudioStreamTTS / qwen-audio-3.0-tts-flash /
+      longanfengyue / speech_rate 0.6
+
+    主场景（FIRST → 3 条 flush 进度播报 → 30s 空窗 → 回答正文 → LAST）
+
+      修复后（flush=True）：
+        SERVER_BEGIN '开始进行综合搜索。'
+        SERVER_BEGIN '正在搜索知识库。'
+        SERVER_BEGIN '正在搜索大模型。'
+        SERVER_BEGIN '腹膜透析患者的饮食需要控制水分和盐分摄入，……'
+        30s 空窗无 task-failed；音频 206 帧；收到 LAST。        → PASS
+
+      对照组（flush=False）：
+        SERVER_BEGIN '开始进行综合搜索。'
+        SERVER_BEGIN '正在搜索知识库。正在搜索大模型。'          ← 复现合并
+        （本次未出现 23s 报错，因为空闲看门狗在 15s 先收尾了，
+          说明看门狗本身也是有效的第二道防线）
+
+      注意：这是**服务端自己**发出的独立断句事件，不只是客户端字幕
+      被拆开——证明语音也真正分成了三句。
+
+    回归场景（本次改动波及的高风险路径）
+
+      场景                                    结果
+      ─────────────────────────────────────── ─────────────────────────────────
+      中断恢复 LAST→MIDDLE→LAST               2 次 LAST、观察 25s 无孤儿会话 → PASS
+      打断 abort（置标记 + 清空文本队列）     会话被取消、无 23s 超时 → PASS
+      长回答每 4s 一句共 5 句                 看门狗未误杀，230 帧、收到 LAST → PASS
+
+  六、代码审查与加固
+    独立 code-reviewer 复审结论：APPROVE（0 CRITICAL / 0 HIGH）。
+    提出的 2 个 MEDIUM + 3 个 LOW 逐条核实如下。
+
+    已修（MEDIUM 1）：字幕抑制标记从不清理
+      _suppress_caption_gen 原来只在 flush 时置位、从不清除。若某个
+      flush 任务没能被成功关闭（收尾超时），该代次后续所有服务端句首
+      事件都会被静默丢弃 → 「有声音没字幕」。
+      修复：_submit_text 中每条文本都显式设置或清除该标记。
+
+    已修（MEDIUM 2）：迟到的收尾协程污染新任务状态
+      _finish_current_task_quietly 的 finally 原来无条件
+      _last_text_submit_ts = 0.0。收尾超时后协程仍在跑，等它返回时会把
+      新任务刚记录的时间戳抹掉，使空闲看门狗对新任务失效——本想消除的
+      23s 报错仍会出现。
+      修复：finally 只在 self.synthesizer is syn 时复位共享状态。
+      另外补充：_finish_current_task_now 超时/异常时丢弃合成器并置
+      _session_broken。已收到 FINISH 的任务不能再接收文本（SDK 未置
+      _stopped，行为未定义），必须让下一条文本重建会话。
+
+    已修（LOW 1）：「知识库搜索完成。」播报时机错位
+      _medical_search_flow_v2 原来用 `with ThreadPoolExecutor(...)`，
+      该块在 submit 之后立即退出，而 __exit__ 会 join 两个 future，
+      所以这条播报要等医疗大模型也跑完才发出，语义错位。
+      修复：改用显式 executor，按完成顺序取结果；两条链路仍并行执行，
+      总耗时不变（有测试断言并行启动且总耗时 < 串行）。
+
+    未修（LOW 2）：判为误报
+      「空闲看门狗不覆盖 FIRST→首条文本的间隔」不成立。查 SDK 源码：
+      任务在**首次 streaming_call** 时才建立（__start_stream →
+      connect + 发 run-task），FIRST 到首条文本之间服务端根本没有任务，
+      不存在 23s 看门狗。
+
+    未修（LOW 3）：接受的取舍
+      主动收尾等待 on_complete 上限 10s，超时仍关闭连接，极端情况下会
+      截断短句尾部音频。但已下发 FINISH 的任务不能再接收文本，必须关闭；
+      进度播报只有十来个字，合成远低于该上限。已在代码中注明取舍。
+
+  七、测试
+    新增 tests/test_tts_progress_flush.py（26 用例），覆盖：
+      · 三条进度播报 → 三条独立字幕、三次独立收尾、全程无 LAST；
+      · flush 收尾顺序（FINISH → close）与「不发 LAST」；
+      · 服务端句首事件去重（客户端已下发时不重复）；
+      · 空闲看门狗收尾 / 近期任务与未提交任务不被误杀；
+      · task-failed 后重建会话；
+      · 过期回调隔离（不误发 LAST、不误唤醒等待者、不误判损坏、
+        不重复字幕）；
+      · 收尾失败的三个边界（见第六节 MEDIUM 1/2）；
+      · 「知识库搜索完成」早于医疗大模型返回；两条检索并行启动。
+
+    关键用例均做了**变异验证**——把修复还原成缺陷后测试确实失败，
+    证明测试对真实改动有约束力，不是空转测试。
+
+    删除 tests/test_progress_tts_pacing.py：其测试对象
+    _pace_progress_gap 在代码中已不存在，且该方案已被证明无效。
+
+    全量 tests/：299 passed, 3 skipped, 4 failed。
+    这 4 项为既有失败、与本次改动无关：
+      · 3 个断言 huoshan_double_stream / alibl_stream / aliyun_stream
+        的源码中存在它们并未实现的会话重建分支（本次未触碰这些文件）；
+      · 1 个是 ASR 测试自身 fixture 缺陷（用例未设置 provider._bridge，
+        导致 _is_active() 提前返回、断言落空）。
+
+  八、已知代价与注意事项
+    代价
+      每条进度播报新建一个 DashScope 任务（一次 ws 建连，实测 <1s）。
+      医疗链路本身 30s+，且与后端推理并行，用户无感知。换来的是语音与
+      字幕同时被正确拆分，以及不再出现 23s 报错。
+
+    适用范围
+      flush 目前只有 qwen provider 实现。xunfei / alibl / aliyun /
+      huoshan 会忽略该字段，仍可能合并短文本（当前生效的是 qwen，
+      不受影响）。若将来切换 provider，需要按同样思路补实现。
+
+    环境风险（与本次改动无关，但会影响重启）
+      本机 Windows 证书存储存在损坏记录，ssl.create_default_context()
+      抛 ASN1: NOT_ENOUGH_DATA，导致 aiohttp / dashscope 导入失败，
+      provider 初始化时报 'NoneType' object has no attribute 'api_key'。
+      当前运行中的服务进程是在该问题出现前启动的，所以 TTS 正常；
+      **直接重启会导致 TTS 不可用**。建议先用 certmgr.msc 检查并删除
+      损坏证书（或重装 Python 环境的证书）再重启。
+      验证脚本临时用 certifi 兜底（TLS 校验仍开启），仓库代码未为此
+      做任何改动。

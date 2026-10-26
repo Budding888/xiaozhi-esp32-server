@@ -22,7 +22,7 @@ logger = setup_logging()
 
 
 def _send_progress_tts(conn, text: str):
-    """向TTS队列发送进度提示文本"""
+    """向TTS队列发送进度提示文本（flush=True：逐条独立成句，避免被连读）"""
     try:
         from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType, ContentType
         conn.tts.tts_text_queue.put(
@@ -31,6 +31,7 @@ def _send_progress_tts(conn, text: str):
                 sentence_type=SentenceType.MIDDLE,
                 content_type=ContentType.TEXT,
                 content_detail=text,
+                flush=True,
             )
         )
     except Exception:

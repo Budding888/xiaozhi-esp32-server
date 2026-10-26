@@ -24,7 +24,12 @@ logger = setup_logging()
 
 
 def _send_progress_tts(conn, text: str):
-    """向 TTS 队列发送进度提示文本"""
+    """向 TTS 队列发送进度提示文本
+
+    flush=True：提交后立即结束当前合成任务，让这条进度播报独立成句。
+    流式 TTS 服务端会把连续提交的多条短文本合并成一句朗读（字幕也只剩
+    一条），必须显式断任务才能分开。
+    """
     try:
         from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType, ContentType
         conn.tts.tts_text_queue.put(
@@ -33,6 +38,7 @@ def _send_progress_tts(conn, text: str):
                 sentence_type=SentenceType.MIDDLE,
                 content_type=ContentType.TEXT,
                 content_detail=text,
+                flush=True,
             )
         )
     except Exception:

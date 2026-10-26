@@ -1032,8 +1032,8 @@ agentscope>=2.0.0
 - [AgentScope 2.0 官方文档](https://github.com/agentscope-ai/agentscope)
 - [AgentScope Python Quickstart](https://doc.agentscope.io/tutorial/quickstart_agent.html)
 - [AgentScope Pipeline 文档](https://doc.agentscope.io/tutorial/task_pipeline.html)
-- [小智项目-医疗大模型+知识库+通用LLM 生产级融合方案v1](./小智项目-医疗大模型+知识库+通用LLM%20生产级融合方案.md)
-- [xiaozhi-esp32-server CLAUDE.md](./CLAUDE.md)
+- [小智项目-医疗大模型+知识库+通用LLM 生产级融合方案v1](小智项目-医疗大模型+知识库+通用LLM 生产级融合方案.md)
+- [xiaozhi-esp32-server CLAUDE.md](../CLAUDE.md)
 - [AgentScope Java 2.0 发布](https://developer.aliyun.com/article/1737644)
 
 ---

@@ -55,7 +55,13 @@ logger = setup_logging()
 
 
 def _send_progress_tts(conn, text: str):
-    """向TTS队列发送进度提示文本，让用户实时了解处理进度"""
+    """向TTS队列发送进度提示文本，让用户实时了解处理进度
+
+    flush=True：让 TTS 在提交这条文本后立即结束当前合成任务。
+    流式 TTS 服务端会把连续提交的多条短文本合并成一句朗读（字幕也只剩
+    一条），进度播报必须逐条独立成句，否则「开始进行综合搜索。正在搜索
+    知识库。正在搜索大模型。」会被连读成一句话。
+    """
     try:
         from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType, ContentType
         conn.tts.tts_text_queue.put(
@@ -64,6 +70,7 @@ def _send_progress_tts(conn, text: str):
                 sentence_type=SentenceType.MIDDLE,
                 content_type=ContentType.TEXT,
                 content_detail=text,
+                flush=True,
             )
         )
     except Exception:
@@ -153,12 +160,12 @@ def _medical_search_flow_v2(conn, question):
     from concurrent.futures import ThreadPoolExecutor
 
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
-    _send_progress_tts(conn, "好的。")
-    _send_progress_tts(conn, "很高兴为您服务。")
-    _send_progress_tts(conn, f"正在为您查询关于{clean_question}，结果尽快为您呈现，请耐心等待。")
+    _send_progress_tts(conn, "好哒")
+    _send_progress_tts(conn, "小乐收到您的问题啦，很高兴为您服务")
+    _send_progress_tts(conn, f"马上帮您查询 {clean_question}，稍后就有结果，请您稍等片刻")
 
     # ===== 阶段1：Query改写（顺序执行，快速）=====
-    _send_progress_tts(conn, "开始进行综合搜索。")
+    _send_progress_tts(conn, "准备开始综合搜索咯")
     optimized_query = _optimize_rag_query(conn, question)
     search_query = optimized_query or question
     logger.bind(tag=TAG).info(f"===========用户query改写结果===========：{search_query}")
@@ -171,26 +178,34 @@ def _medical_search_flow_v2(conn, question):
     medical_result = None
 
     if ragflow_healthy:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            _send_progress_tts(conn, "正在搜索知识库。")
+        # 用显式 executor 而不是 with 语句：with 退出时会 join 两个 future，
+        # 导致「知识库搜索完成」只能在医疗大模型也跑完后才播报（语义错位）。
+        # 这里按完成顺序取结果，两条链路仍并行执行，总耗时不变。
+        executor = ThreadPoolExecutor(max_workers=2)
+        try:
+            _send_progress_tts(conn, "小乐先去翻阅知识库")
             future_rag = executor.submit(_parallel_rag_search, conn, search_query)
 
-            _send_progress_tts(conn, "正在搜索大模型。")
+            _send_progress_tts(conn, "同步唤醒医疗大模型")
             future_medical = executor.submit(_call_medical_qwen_v2_no_stream, conn, question)
 
-        try:
-            rag_result = future_rag.result()
-            if rag_result:
-                logger.bind(tag=TAG).info(f"===========【RAGFlow】并行搜索结果===========：{rag_result}")
-        except Exception as e:
-            logger.bind(tag=TAG).error(f"===========并行RAGFlow失败===========: {e}")
+            try:
+                rag_result = future_rag.result()
+                if rag_result:
+                    _send_progress_tts(conn, "知识库资料找到了")
+                    logger.bind(tag=TAG).info(f"===========【RAGFlow】并行搜索结果===========：{rag_result}")
+            except Exception as e:
+                logger.bind(tag=TAG).error(f"===========并行RAGFlow失败===========: {e}")
 
-        try:
-            medical_result = future_medical.result()
-            if medical_result:
-                logger.bind(tag=TAG).info(f"===========【MedicalQwen】并行搜索结果===========：{medical_result}")
-        except Exception as e:
-            logger.bind(tag=TAG).error(f"===========并行MedicalQwen失败===========: {e}")
+            try:
+                medical_result = future_medical.result()
+                if medical_result:
+                    _send_progress_tts(conn, "大模型思考完成啦")
+                    logger.bind(tag=TAG).info(f"===========【MedicalQwen】并行搜索结果===========：{medical_result}")
+            except Exception as e:
+                logger.bind(tag=TAG).error(f"===========并行MedicalQwen失败===========: {e}")
+        finally:
+            executor.shutdown(wait=True)
     else:
         logger.bind(tag=TAG).info("RAGFlow 不可用，仅执行 MedicalQwen 推理")
         _send_progress_tts(conn, "正在搜索大模型。")
@@ -199,7 +214,7 @@ def _medical_search_flow_v2(conn, question):
             logger.bind(tag=TAG).info(f"===========【MedicalQwen】单独检索结果===========：{medical_result}")
 
     # ===== 阶段3：通用LLM融合（流式：生成一句播报一句） =====
-    _send_progress_tts(conn, "正在总结相关搜索结果，请稍等。")
+    _send_progress_tts(conn, f"小乐正在加急整理搜索结果，马上就好，请稍等一小会儿哦")
 
     merged_answer = _merge_rag_and_medical_streaming(
         conn, question, rag_result, medical_result

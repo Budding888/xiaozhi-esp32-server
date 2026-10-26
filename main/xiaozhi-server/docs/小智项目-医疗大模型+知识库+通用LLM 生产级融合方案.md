@@ -318,7 +318,7 @@ import os
 from datetime import datetime
 
 # 创建日志目录
-os.makedirs("./logs", exist_ok=True)
+os.makedirs("../logs", exist_ok=True)
 
 # 日志格式配置
 logging.basicConfig(
