@@ -208,7 +208,7 @@ def _medical_search_flow_v2(conn, question):
             executor.shutdown(wait=True)
     else:
         logger.bind(tag=TAG).info("RAGFlow 不可用，仅执行 MedicalQwen 推理")
-        _send_progress_tts(conn, "正在搜索大模型。")
+        _send_progress_tts(conn, "正在搜索医疗大模型")
         medical_result = _call_medical_qwen_v2_no_stream(conn, question)
         if medical_result:
             logger.bind(tag=TAG).info(f"===========【MedicalQwen】单独检索结果===========：{medical_result}")
@@ -255,8 +255,8 @@ def _fallback_medical_flow(conn, question):
 
     clean_question = re.sub(r'[^一-鿿A-Za-z0-9]', '', question).strip() or question
     _send_progress_tts(conn, "好的。")
-    _send_progress_tts(conn, f"正在查询关于{clean_question}的问题，请稍候。")
-    _send_progress_tts(conn, "正在检索知识库。")
+    _send_progress_tts(conn, f"正在查询 {clean_question} ，请稍候。")
+    _send_progress_tts(conn, "正在检索知识库")
 
     try:
         rag_result = search_from_ragflow_v2(conn, question=question)
@@ -265,7 +265,7 @@ def _fallback_medical_flow(conn, question):
             knowledge_text = _strip_ragflow_markdown(rag_result.result.strip())
             if knowledge_text:
                 logger.bind(tag=TAG).info(f"============【降级路径：RAGFlow】 返回内容如下:============\n {knowledge_text}")
-                _send_progress_tts(conn, "已查询到相关知识，正在整理回答。")
+                _send_progress_tts(conn, "小乐正在加急整理搜索结果，马上就好，请稍等一小会儿哦")
                 fallback_answer = _fallback_answer_with_llm_streaming(conn, question, knowledge_text)
                 if fallback_answer:
                     fallback_answer = _medical_verify(fallback_answer)
