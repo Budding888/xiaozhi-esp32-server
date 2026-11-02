@@ -364,8 +364,20 @@ class TTSProvider(TTSProviderBase):
         try:
             # 建立新连接
             if self.ws is None:
-                logger.bind(tag=TAG).warning(f"WebSocket连接不存在，终止发送文本")
-                return
+                # 上一轮会话可能已被 LAST 关闭（如中断恢复场景
+                # 会在 LAST 之后再追加一条 MIDDLE 文本询问用户）。
+                # 此时按需重建连接，避免丢弃该段语音。
+                logger.bind(tag=TAG).warning(
+                    "WebSocket连接不存在，正在重建会话后继续发送文本"
+                )
+                sid = getattr(self.conn, "sentence_id", None)
+                if sid:
+                    await self.start_session(sid)
+                if self.ws is None:
+                    logger.bind(tag=TAG).error(
+                        "重建WebSocket连接失败，终止发送文本"
+                    )
+                    return
 
             #  过滤Markdown
             filtered_text = MarkdownCleaner.clean_markdown(text)

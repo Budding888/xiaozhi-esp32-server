@@ -76,13 +76,21 @@ class TTSProvider(TTSProviderBase):
                     self.tts_stop_request = False
                     self.processed_chars = 0
                     self.tts_text_buff = []
+                    self.is_first_sentence = True
                     self.before_stop_play_files.clear()
 
                 elif ContentType.TEXT == message.content_type:
-                    self.tts_text_buff.append(message.content_detail)
-                    segment_text = self._get_segment_text()
-                    if segment_text:
-                        self.to_tts_single_stream(segment_text)
+                    if getattr(message, "flush", False):
+                        # flush=True：本条文本是一条需要独立成句的短句（如
+                        # 医疗问答的进度播报）。必须立即单独合成并重置分段
+                        # 状态，否则多条短句会在 tts_text_buff 里累积，直到
+                        # LAST 才一次性吐出，被 MiMo 连读成一个没有停顿的长句。
+                        self._speak_flush_text(message.content_detail)
+                    else:
+                        self.tts_text_buff.append(message.content_detail)
+                        segment_text = self._get_segment_text()
+                        if segment_text:
+                            self.to_tts_single_stream(segment_text)
 
                 elif ContentType.FILE == message.content_type:
                     logger.bind(tag=TAG).info(
@@ -107,6 +115,28 @@ class TTSProvider(TTSProviderBase):
                     f"处理TTS文本失败: {str(e)}, 类型: {type(e).__name__}, 堆栈: {traceback.format_exc()}"
                 )
                 continue
+
+    def _speak_flush_text(self, text):
+        """把 flush=True 的短句作为独立语句立即合成播报。
+
+        先吐出 tts_text_buff 里尚未处理的文本（保持先后顺序、不丢字），
+        再把本条文本单独合成；最后重置分段状态，后续的进度播报与正式
+        回答都不会再与本条文本合并连读。
+        """
+        full_text = "".join(self.tts_text_buff)
+        remaining_text = full_text[self.processed_chars :]
+        if remaining_text:
+            segment_text = textUtils.get_string_no_punctuation_or_emoji(remaining_text)
+            if segment_text:
+                self.to_tts_single_stream(segment_text)
+        if text:
+            segment_text = textUtils.get_string_no_punctuation_or_emoji(text)
+            if segment_text:
+                self.to_tts_single_stream(segment_text)
+        # 本条文本已作为完整语句播报完毕，重置分段状态
+        self.tts_text_buff = []
+        self.processed_chars = 0
+        self.is_first_sentence = True
 
     def _process_remaining_text_stream(self, is_last=False):
         """处理剩余的文本并生成语音"""
