@@ -9,6 +9,10 @@ from config.manage_api_client import init_service, get_server_config, get_agent_
 # （例如 enable_resume_inquiry 设为 false 仍会触发「中断恢复询问」）。
 LOCAL_ONLY_CONFIG_KEYS = ("enable_resume_inquiry",)
 
+# 由本地 config.yaml 管控、智控台(manager-api)参数中不存在的列表型配置。
+# 远程配置缺键时，从本地配置回退原值（保持列表，不做布尔转换）。
+LOCAL_ONLY_LIST_CONFIG_KEYS = ("abort_commands",)
+
 
 def get_project_dir():
     """获取项目根目录"""
@@ -46,6 +50,25 @@ def _merge_local_only_switches(config_data, custom_config):
             value = local_defaults.get(key)
         if value is not None:
             config_data[key] = _as_bool(value)
+
+
+def _merge_local_only_lists(config_data, custom_config):
+    """把智控台(manager-api)不管理的本地列表型配置合并进远程配置。
+
+    远程配置缺键时，依次回退 data/.config.yaml、config.yaml 中的列表值。
+    非列表或空列表视为未配置，保持远程配置原样，由代码内默认值兜底。
+    """
+    local_defaults = read_config(get_project_dir() + "config.yaml") or {}
+    for key in LOCAL_ONLY_LIST_CONFIG_KEYS:
+        if config_data.get(key):
+            continue
+        for source in (custom_config, local_defaults):
+            value = source.get(key)
+            if isinstance(value, list) and value:
+                config_data[key] = [
+                    str(item) for item in value if str(item).strip()
+                ]
+                break
 
 
 def load_config():
@@ -133,6 +156,8 @@ async def get_config_from_api_async(config):
         config_data["prompt_template"] = config.get("prompt_template")
     # 本地专属开关回退：远程配置缺键时以本地配置为准
     _merge_local_only_switches(config_data, config)
+    # 本地专属列表配置回退（如 abort_commands）
+    _merge_local_only_lists(config_data, config)
     return config_data
 
 

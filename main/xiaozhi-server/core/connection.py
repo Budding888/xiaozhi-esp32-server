@@ -46,6 +46,20 @@ from core.utils import textUtils
 
 TAG = __name__
 
+# 未配置 abort_commands 时使用的中止播报指令。
+# 命中后只硬中断本轮 LLM/TTS 播报，不退出会话、不清空对话历史。
+DEFAULT_ABORT_COMMANDS = [
+    "停",
+    "停下",
+    "停一下",
+    "停止",
+    "打断一下",
+    "别说了",
+    "不要说了",
+    "闭嘴",
+    "安静",
+]
+
 # 工具调用规则 - 用于动态注入提醒
 TOOL_CALLING_RULES = """
 <tool_calling>
@@ -133,6 +147,8 @@ class ConnectionHandler:
         self._chat_was_aborted = False          # 当前 chat() 是否被中断过
         self._pending_resume_query = None       # 等待用户确认恢复的问题
         self._pending_resume_timeout = 0        # 等待恢复确认的超时时间戳（秒）
+        self.abort_generation = 0               # 硬中断代次：每次 abort +1
+        self._query_abort_generation = 0        # 本轮问题提交时的中断代次快照
 
         # 线程任务相关
         self.loop = None  # 在 handle_connection 中获取运行中的事件循环
@@ -201,6 +217,10 @@ class ConnectionHandler:
         self.agentscope_pipeline = None
 
         self.cmd_exit = self.config["exit_commands"]
+        # 中止播报指令：命中后中断本轮 LLM/TTS，但不退出会话（abort != goodbye）
+        self.cmd_abort = list(
+            self.config.get("abort_commands") or DEFAULT_ABORT_COMMANDS
+        )
 
         # 是否在聊天结束后关闭连接
         self.close_after_chat = False
@@ -976,6 +996,16 @@ class ConnectionHandler:
             result.append(text[:8])
         return result
 
+    def _reset_abort_for_new_turn(self):
+        """新一轮对话开始时按「中断代次」决定是否清除中断标记。
+
+        仅当本轮问题提交之后没有发生过硬中断（abort_generation 未变化）时清除。
+        否则说明用户在本轮 LLM 请求返回前已发出「停止」，必须保持中断状态，
+        避免中断标记被新一轮生成重置后继续播报。
+        """
+        if self._query_abort_generation == self.abort_generation:
+            self.client_abort = False
+
     def chat(self, query, depth=0):
         if query is not None:
             self.logger.bind(tag=TAG).info(f"大模型收到用户消息: {query}")
@@ -1015,6 +1045,9 @@ class ConnectionHandler:
             # 跟踪当前问题和重置中断标记
             self.current_query = query
             self._chat_was_aborted = False
+            # 仅当本轮问题提交后没有发生过硬中断时才清除中断标记，
+            # 避免「停止」指令被新一轮生成覆盖后继续播报
+            self._reset_abort_for_new_turn()
 
             # query=None 时仅注入恢复提示，不入 dialogue、不送 TTS FIRST
             if query is None:
@@ -1177,7 +1210,6 @@ class ConnectionHandler:
         # 支持多个并行工具调用 - 使用列表存储
         tool_calls_list = []  # 格式: [{"id": "", "name": "", "arguments": ""}]
         content_arguments = ""
-        self.client_abort = False
         emotion_flag = True
         try:
             for response in llm_responses:

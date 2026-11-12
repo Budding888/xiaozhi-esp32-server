@@ -122,6 +122,9 @@ async def startToChat(conn: "ConnectionHandler", text):
     await send_stt_message(conn, actual_text)
     # 预先设置 current_query，防止线程池延迟导致 handleAbortMessage 读不到
     conn.current_query = actual_text
+    # 记录本轮问题提交时的中断代次快照：
+    # 若 chat() 启动前用户已发出「停止」指令，代次将不一致，chat() 会保持中断
+    conn._query_abort_generation = getattr(conn, "abort_generation", 0)
     conn.executor.submit(conn.chat, actual_text)
 
 

@@ -1,13 +1,14 @@
 import json
 import uuid
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from core.connection import ConnectionHandler
 from core.utils.dialogue import Message
 from core.providers.tts.dto.dto import ContentType
 from core.handle.helloHandle import checkWakeupWords
+from core.handle.abortHandle import handleAbortMessage
 from plugins_func.register import Action, ActionResponse
 from core.handle.sendAudioHandle import send_stt_message
 from core.handle.reportHandle import enqueue_tool_report
@@ -36,6 +37,10 @@ async def handle_user_intent(conn: "ConnectionHandler", text):
 
     # 明确再见不被打断
     if conn.is_exiting:
+        return True
+
+    # 检查是否是中止播报命令（硬中断本轮播报，但不退出会话）
+    if await check_direct_abort(conn, filtered_text):
         return True
 
     # 检查是否是唤醒词
@@ -71,6 +76,65 @@ async def check_direct_exit(conn: "ConnectionHandler", text):
             await conn.close()
             return True
     return False
+
+
+# 中止播报指令常见的语气助词/量词后缀，用于容忍「停止吧」「停下来」等同义表达
+_ABORT_COMMAND_SUFFIXES = ("一下吧", "一下", "来", "吧", "啊", "呀", "嘛", "哦", "啦", "了")
+
+
+def _strip_abort_command_suffixes(text: str) -> str:
+    """反复去掉语气助词等后缀，便于中止指令的同义匹配"""
+    stripped = True
+    while stripped and text:
+        stripped = False
+        for suffix in _ABORT_COMMAND_SUFFIXES:
+            if text.endswith(suffix) and len(text) > len(suffix):
+                text = text[: -len(suffix)]
+                stripped = True
+                break
+    return text
+
+
+def _match_abort_command(text: str, commands) -> Optional[str]:
+    """在文本中匹配中止播报指令词，返回命中的配置项（未命中返回 None）。
+
+    优先精确匹配，其次按去掉语气助词后的等价形式匹配。
+    """
+    if not text:
+        return None
+
+    normalized_text = _strip_abort_command_suffixes(text)
+    normalized_matches = []
+    for command in commands or []:
+        if not command:
+            continue
+        command_str = str(command)
+        if command_str == text:
+            return command_str
+        if _strip_abort_command_suffixes(command_str) == normalized_text:
+            normalized_matches.append(command_str)
+
+    # 多个指令归一到同一形式时，取最具体的配置项（最长），便于日志定位
+    return max(normalized_matches, key=len) if normalized_matches else None
+
+
+async def check_direct_abort(conn: "ConnectionHandler", text):
+    """检查是否有明确的中止播报命令（由 config.yaml 的 abort_commands 配置）。
+
+    命中后立即强掐断本轮播报：终止 LLM 流式推理 + 停止 TTS 播放 +
+    丢弃本地音频队列；但保持 WebSocket 连接、保留对话历史，
+    不执行 goodbye（abort != goodbye），会话可继续使用。
+    """
+    matched = _match_abort_command(text, getattr(conn, "cmd_abort", None))
+    if matched is None:
+        return False
+
+    conn.logger.bind(tag=TAG).info(
+        f"识别到中止播报命令: {text}（命中配置: {matched}），仅中断本轮播报，不退出会话"
+    )
+    # 用户主动要求停止，不进入「中断恢复询问」
+    await handleAbortMessage(conn, save_interrupted_query=False)
+    return True
 
 
 
