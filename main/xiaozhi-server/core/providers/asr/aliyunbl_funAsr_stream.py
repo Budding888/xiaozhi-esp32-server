@@ -40,6 +40,24 @@ TAG = __name__
 logger = setup_logging()
 
 
+def _config_int(config: dict, key: str, default: int) -> int:
+    """读取整型配置，容忍智控台下发的空字符串/None（未填写时回退默认值）"""
+    value = config.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    return int(value)
+
+
+def _config_bool(config: dict, key: str, default: bool) -> bool:
+    """读取布尔配置，兼容智控台可能下发的 "false"/"0"/"no" 字符串"""
+    value = config.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "1", "yes", "on")
+
+
 class _RecognitionBridge(RecognitionCallback):
     """把 SDK 回调桥接到 ASRProvider 上。
 
@@ -169,24 +187,24 @@ class ASRProvider(ASRProviderBase):
         self.api_key = config.get("api_key")
         # 模型：默认使用 qwen 通义千问 3 Flash 实时语音识别
         self.model = config.get("model", "fun-asr-flash-2026-06-15")
-        self.sample_rate = int(config.get("sample_rate", 16000))
+        self.sample_rate = _config_int(config, "sample_rate", 16000)
         self.format = config.get("format", "pcm")
 
         # 可选参数
         self.vocabulary_id = config.get("vocabulary_id")
         self.language_hints = config.get("language_hints")  # 可选: ["zh", "en"]
-        self.disfluency_removal_enabled = bool(
-            config.get("disfluency_removal_enabled", False)
+        self.disfluency_removal_enabled = _config_bool(
+            config, "disfluency_removal_enabled", True
         )
-        self.punctuation_prediction_enabled = bool(
-            config.get("punctuation_prediction_enabled", True)
+        self.punctuation_prediction_enabled = _config_bool(
+            config, "punctuation_prediction_enabled", True
         )
-        self.semantic_punctuation_enabled = bool(
-            config.get("semantic_punctuation_enabled", False)
+        self.semantic_punctuation_enabled = _config_bool(
+            config, "semantic_punctuation_enabled", False
         )
-        self.max_sentence_silence = int(config.get("max_sentence_silence", 200))
-        self.multi_threshold_mode_enabled = bool(
-            config.get("multi_threshold_mode_enabled", False)
+        self.max_sentence_silence = _config_int(config, "max_sentence_silence", 200)
+        self.multi_threshold_mode_enabled = _config_bool(
+            config, "multi_threshold_mode_enabled", False
         )
 
         # 运行时状态
